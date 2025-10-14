@@ -1,13 +1,21 @@
 // src/game.js
 "use strict";
 
-import { supabase } from "./supabase";
-import { showCadastroModal, getLocalPlayer } from "./ui/cadastroModal";
+import { supabase } from './supabase';
+import { ensureCadastro, getLocalPlayer, showCadastroModal } from './ui/cadastroModal';
+
+// ================== BASE/ASSETS (GitHub Pages friendly) ==================
+const BASE = (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.BASE_URL) ? import.meta.env.BASE_URL : '/';
+const joinBase = (p) => {
+  if (!p) return '';
+  const s = String(p);
+  if (/^(https?:|data:|blob:)/i.test(s)) return s;
+  return BASE + s.replace(/^\//, '');
+};
 
 // ================== CONSTANTES ==================
-const KEY = "flappy:config";
-const SUPABASE_SCORES_TABLE = "scores";
-const BASE = import.meta.env.BASE_URL;
+const KEY = 'flappy:config';
+const SUPABASE_SCORES_TABLE = 'scores';
 
 // assets padrão (devem existir em public/assets/img/)
 const DEFAULT_ASSETS = {
@@ -20,128 +28,79 @@ const DEFAULT_ASSETS = {
   bottomPipe: 'assets/img/bottompipe.png',
 };
 
-function fromPublic(p) {
-  if (!p) return '';
-  const s = String(p).trim();
-  // URLs absolutas continuam como estão
-  if (/^(https?:|data:|blob:)/i.test(s)) return s;
-  // remove './' ou '/' iniciais e prefixa BASE
-  return `${BASE}${s.replace(/^\.?\/*/, '')}`;
-}
-
 // config padrão
 const DEFAULT_CONFIG = {
-  board: { width: 360, height: 640, background: "#70c5ce" },
-  assets: { ...DEFAULT_ASSETS, sfx: { flap: "", score: "", hit: "" } },
+  board: { width: 360, height: 640, background: '#70c5ce' },
+  assets: { ...DEFAULT_ASSETS, sfx: { flap: '', score: '', hit: '' } },
   bird: {
-    width: 34,
-    height: 24,
-    startXPercent: 12.5,
-    startYPercent: 50,
-    flapForce: 6,
-    maxFallSpeed: 12,
-    hitboxPadding: 2,
+    width: 34, height: 24,
+    startXPercent: 12.5, startYPercent: 50,
+    flapForce: 6, maxFallSpeed: 12, hitboxPadding: 2,
     tilt: {
-      enabled: true,
-      upDeg: -25,
-      downDeg: 70,
-      responsiveness: 0.15,
-      velForMaxUp: 6,
-      velForMaxDown: 12,
-      snapOnFlap: true,
-      minDeg: -45,
-      maxDeg: 90,
+      enabled: true, upDeg: -25, downDeg: 70, responsiveness: 0.15,
+      velForMaxUp: 6, velForMaxDown: 12, snapOnFlap: true, minDeg: -45, maxDeg: 90
     },
-    flapAnim: { enabled: true, durationMs: 1000, fps: 12 },
+    flapAnim: { enabled: true, durationMs: 1000, fps: 12 }
   },
   physics: { gravity: 0.4 },
   pipes: {
-    width: 64,
-    height: 512,
-    scrollSpeed: 2,
-    gapPercent: 25,
-    randomBasePercent: 25,
-    randomRangePercent: 50,
-    autoStretchToEdges: false,
-    edgeOverflowPx: 0,
+    width: 64, height: 512, scrollSpeed: 2, gapPercent: 25,
+    randomBasePercent: 25, randomRangePercent: 50,
+    autoStretchToEdges: false, edgeOverflowPx: 0
   },
   difficulty: {
-    rampEnabled: false,
-    speedPerScore: 0.05,
-    minGapPercent: 18,
-    gapStepPerScore: 0.2,
-    timeRampEnabled: true,
-    timeStartDelayMs: 0,
-    timeSpeedPerSec: 0.03,
-    timeMaxExtraSpeed: 5,
-    timeGapStepPerSec: 0.02,
+    rampEnabled: false, speedPerScore: 0.05, minGapPercent: 18, gapStepPerScore: 0.2,
+    timeRampEnabled: true, timeStartDelayMs: 0,
+    timeSpeedPerSec: 0.03, timeMaxExtraSpeed: 5, timeGapStepPerSec: 0.02
   },
   spawn: { intervalMs: 1500 },
   scoring: { pointsPerPipe: 0.5 },
   ui: {
-    font: "45px sans-serif",
-    scoreColor: "#ffffff",
-    gameOverText: "GAME OVER",
-    gameOverFont: "45px sans-serif",
-    gameOverColor: "#ffffff",
+    font: '45px sans-serif', scoreColor: '#ffffff',
+    gameOverText: 'GAME OVER', gameOverFont: '45px sans-serif', gameOverColor: '#ffffff'
   },
   controls: {
-    jump: ["Space", "ArrowUp", "KeyX"],
+    jump: ['Space', 'ArrowUp', 'KeyX'],
     minFlapIntervalMs: 120,
-    allowHoldToFlap: false,
+    allowHoldToFlap: false
   },
-  gameplay: { restartOnJump: true, gracePeriodMs: 3000, pauseKey: "KeyP" },
+  gameplay: { restartOnJump: true, gracePeriodMs: 100, pauseKey: 'KeyP' }
 };
 
 // ================== ESTADO ==================
 let cfg = structuredClone(DEFAULT_CONFIG);
 let canvas, ctx;
-let topPipeImg = null,
-  bottomPipeImg = null;
-let birdImgs = [],
-  SFX = {};
+let topPipeImg = null, bottomPipeImg = null;
+let birdImgs = [], SFX = {};
 
-let bird,
-  velocityY = 0,
-  pipeArray = [];
-let gameOver = false,
-  gameOverHandled = false,
-  score = 0;
-let allowedJumpKeys = new Set(),
-  spawnTimerId = null;
-let birdTiltDeg = 0,
-  flapAnimStart = 0,
-  flapAnimEnd = 0;
-let gameStarted = false,
-  graceUntilTs = 0,
-  paused = false,
-  lastTs = 0;
-let activeTimeMs = 0,
-  timeRampStartTs = 0,
-  lastFlapTs = -1;
-let uiLocked = false;
+let bird, velocityY = 0, pipeArray = [];
+let gameOver = false, gameOverHandled = false, score = 0;
+let allowedJumpKeys = new Set(), spawnTimerId = null;
+let birdTiltDeg = 0, flapAnimStart = 0, flapAnimEnd = 0;
+let gameStarted = false, graceUntilTs = 0, paused = false, lastTs = 0;
+let activeTimeMs = 0, timeRampStartTs = 0, lastFlapTs = -1;
+let uiLocked = false; // bloqueia apenas a lógica do jogo (não bloqueia digitação)
 
-let runId = null,
-  runStartISO = null,
-  runStartPerf = 0;
+let runId = null, runStartISO = null, runStartPerf = 0;
+let startOverlay = null, scoresOverlay = null, goOverlay = null;
 
-// telas / overlays
-let screen = "start"; // 'start' | 'game' | 'scores'
-let startOverlay = null;
-let scoresOverlay = null;
-let lastFinalScore = null;
-
-// ================== BOOT (export) ==================
+// ================== BOOT (exportado) ==================
 export async function boot() {
   cfg = await loadConfigSanitized();
   setupCanvas();
   await loadAssets();
   setupControls();
 
-  // Cria START e SCORES de uma vez
   ensureStartOverlay();
+  ensureScoresOverlay();
+  ensureGameOverOverlay();
 
+  // cria estado inicial (bird etc.) ANTES do loop pra evitar undefined
+  startNewRun();
+
+  // mostra a tela inicial
   showStartOverlay();
+
   requestAnimationFrame(update);
 }
 
@@ -149,16 +108,14 @@ export async function boot() {
 async function loadConfigSanitized() {
   let merged = structuredClone(DEFAULT_CONFIG);
 
-  // flappy-config.json (opcional)
   try {
-    const res = await fetch(`${BASE}flappy-config.json`, { cache: 'no-store' });
+    const res = await fetch(joinBase('/flappy-config.json'), { cache: 'no-store' });
     if (res.ok) {
       const fileCfg = await res.json();
       merged = deepMerge(merged, fileCfg || {});
     }
   } catch { }
 
-  // localStorage (sem assets para evitar blob:)
   try {
     const raw = localStorage.getItem(KEY);
     if (raw) {
@@ -182,25 +139,25 @@ function sanitizeAssets(a) {
   out.topPipe = normalizeAssetPath(a?.topPipe) || DEFAULT_ASSETS.topPipe;
   out.bottomPipe = normalizeAssetPath(a?.bottomPipe) || DEFAULT_ASSETS.bottomPipe;
 
-  out.sfx = a?.sfx || { flap: "", score: "", hit: "" };
+  out.sfx = a?.sfx || { flap: '', score: '', hit: '' };
   return out;
 }
 
 function normalizeAssetPath(p) {
-  if (!p) return "";
+  if (!p) return '';
   const s = String(p).trim();
-  if (/^(blob:|data:)/i.test(s)) return ""; // nunca blob/data
+  if (/^(blob:|data:)/i.test(s)) return '';
   if (/^https?:\/\//i.test(s)) return s;
-  if (s.startsWith("./assets/")) return s.slice(1); // -> /assets/...
-  if (s.startsWith("assets/")) return `/${s}`;
-  if (s.startsWith("/")) return s;
-  return "";
+  if (s.startsWith('./assets/')) return joinBase('/' + s.slice(2));
+  if (s.startsWith('assets/')) return joinBase('/' + s);
+  if (s.startsWith('/')) return joinBase(s);
+  return '';
 }
 
 function deepMerge(a, b) {
   const out = Array.isArray(a) ? [...a] : { ...a };
-  Object.keys(b || {}).forEach((k) => {
-    if (b[k] && typeof b[k] === "object" && !Array.isArray(b[k])) {
+  Object.keys(b || {}).forEach(k => {
+    if (b[k] && typeof b[k] === 'object' && !Array.isArray(b[k])) {
       out[k] = deepMerge(a?.[k] || {}, b[k]);
     } else {
       out[k] = b[k];
@@ -212,109 +169,98 @@ const unique = (arr) => [...new Set(arr)];
 
 // ================== CANVAS / ASSETS ==================
 function setupCanvas() {
-  canvas =
-    document.getElementById("board") ||
-    Object.assign(document.createElement("canvas"), { id: "board" });
+  canvas = document.getElementById('board') || Object.assign(document.createElement('canvas'), { id: 'board' });
   if (!canvas.isConnected) document.body.appendChild(canvas);
   canvas.width = cfg.board.width;
   canvas.height = cfg.board.height;
-  ctx = canvas.getContext("2d");
+  ctx = canvas.getContext('2d');
 }
 
 function loadAssets() {
   return new Promise((resolve) => {
     const frames = cfg.assets.birdFrames || [];
     let toLoad = frames.length + 2;
-    const done = () => {
-      if (--toLoad === 0) {
-        birdImgs = birdImgs.filter(okImg);
-        resolve();
-      }
-    };
+    const done = () => { if (--toLoad === 0) { birdImgs = birdImgs.filter(okImg); resolve(); } };
 
     birdImgs = [];
-    frames.forEach((src) => {
+    frames.forEach(src => {
       const im = new Image();
+      im.crossOrigin = "anonymous";
       im.onload = done;
-      im.onerror = () => {
-        console.warn("[assets] falhou frame:", src);
-        done();
-      };
-      im.src = fromPublic(src);
+      im.onerror = () => { console.warn('[assets] falhou frame:', src); done(); };
+      im.src = src;
       birdImgs.push(im);
     });
 
     topPipeImg = new Image();
+    topPipeImg.crossOrigin = "anonymous";
     topPipeImg.onload = done;
-    topPipeImg.onerror = () => {
-      console.warn("[assets] topPipe falhou:", cfg.assets.topPipe);
-      topPipeImg = null;
-      done();
-    };
-    topPipeImg.src = fromPublic(cfg.assets.topPipe);
+    topPipeImg.onerror = () => { console.warn('[assets] topPipe falhou:', cfg.assets.topPipe); topPipeImg = null; done(); };
+    topPipeImg.src = cfg.assets.topPipe;
 
     bottomPipeImg = new Image();
+    bottomPipeImg.crossOrigin = "anonymous";
     bottomPipeImg.onload = done;
-    bottomPipeImg.onerror = () => {
-      console.warn("[assets] bottomPipe falhou:", cfg.assets.bottomPipe);
-      bottomPipeImg = null;
-      done();
-    };
+    bottomPipeImg.onerror = () => { console.warn('[assets] bottomPipe falhou:', cfg.assets.bottomPipe); bottomPipeImg = null; done(); };
+    bottomPipeImg.src = cfg.assets.bottomPipe;
 
-    bottomPipeImg.src = fromPublic(cfg.assets.bottomPipe);
-
-    ["flap", "score", "hit"].forEach((k) => {
+    ['flap', 'score', 'hit'].forEach(k => {
       const url = cfg.assets?.sfx?.[k];
-      if (url) {
-        const a = new Audio(url);
-        a.preload = "auto";
-        SFX[k] = a;
-      }
+      if (url) { const a = new Audio(url); a.preload = 'auto'; SFX[k] = a; }
     });
   });
 }
 
 // ================== CONTROLES ==================
+function isTypingTarget(ev) {
+  const el = ev?.target;
+  if (!(el instanceof Element)) return false;
+  if (el.closest('input, textarea, select')) return true;
+  if (el.closest('[contenteditable=""], [contenteditable="true"]')) return true;
+  return false;
+}
+function preventScrollForGameKeys(e) {
+  if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code)) e.preventDefault();
+}
+
 function setupControls() {
   allowedJumpKeys = new Set(cfg.controls.jump);
 
-  document.addEventListener("keydown", (e) => {
+  document.addEventListener('keydown', (e) => {
     // F9: limpa config antiga e recarrega
-    if (e.code === "F9") {
-      try {
-        localStorage.removeItem(KEY);
-      } catch { }
+    if (e.code === 'F9') {
+      try { localStorage.removeItem(KEY); } catch { }
       location.reload();
       return;
     }
 
-    if (uiLocked) {
-      if (e.code !== (cfg.gameplay.pauseKey || "KeyP")) e.preventDefault();
-      return;
-    }
-    if (e.code === (cfg.gameplay.pauseKey || "KeyP")) {
-      if (!e.repeat) paused = !paused;
-      return;
-    }
-    if (!cfg.controls.allowHoldToFlap && e.repeat) return;
-    onJumpKey(e);
-  });
+    // se digitando em inputs/textarea/etc → não intercepta NADA
+    if (isTypingTarget(e)) return;
 
-  window.addEventListener("pointerdown", () => {
+    // com overlay ativo (start/scores/gameover ou modal externo), não mexe no jogo
     if (uiLocked) return;
-    onJumpKey({ code: cfg.controls.jump?.[0] || "Space", repeat: false });
-  });
 
-  window.addEventListener("blur", () => {
-    paused = true;
-  });
-  window.addEventListener("focus", () => {
-    paused = false;
-  });
+    // jogo ativo — evita scroll da página com teclas do jogo
+    preventScrollForGameKeys(e);
+
+    if (e.code === (cfg.gameplay.pauseKey || 'KeyP')) { if (!e.repeat) paused = !paused; return; }
+    if (!cfg.controls.allowHoldToFlap && e.repeat) return;
+
+    onJumpKey(e);
+  }, { capture: true });
+
+  window.addEventListener('pointerdown', (e) => {
+    // clicando em campos editáveis → não transforma em “pulo”
+    if (isTypingTarget(e)) return;
+    if (uiLocked) return;
+    onJumpKey({ code: cfg.controls.jump?.[0] || 'Space', repeat: false });
+  }, { capture: true });
+
+  window.addEventListener('blur', () => { paused = true; });
+  window.addEventListener('focus', () => { paused = false; });
 }
 
 function onJumpKey(e) {
-  if (screen !== "game") return;
   if (!allowedJumpKeys.has(e.code)) return;
   if (paused) return;
 
@@ -323,7 +269,11 @@ function onJumpKey(e) {
   if (lastFlapTs >= 0 && now - lastFlapTs < minInt) return;
   lastFlapTs = now;
 
-  if (gameOver) return; // ao fim de jogo, esperamos a navegação via overlays
+  if (gameOver) {
+    if (!cfg.gameplay.restartOnJump) return;
+    hideGameOverOverlay();
+    startNewRun();
+  }
 
   if (!gameStarted) {
     gameStarted = true;
@@ -334,9 +284,7 @@ function onJumpKey(e) {
   }
 
   velocityY = -Math.abs(cfg.bird.flapForce);
-  try {
-    SFX.flap?.play();
-  } catch { }
+  try { SFX.flap?.play(); } catch { }
   navigator.vibrate?.(10);
 
   const t = cfg.bird.tilt;
@@ -358,9 +306,7 @@ function startNewRun() {
   gameOverHandled = false;
   score = 0;
 
-  runId =
-    crypto?.randomUUID?.() ||
-    "run-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8);
+  runId = (crypto?.randomUUID?.() || ('run-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8)));
   runStartISO = new Date().toISOString();
   runStartPerf = performance.now();
 
@@ -368,30 +314,23 @@ function startNewRun() {
   const startY = (cfg.board.height * cfg.bird.startYPercent) / 100;
   bird = { x: startX, y: startY, width: cfg.bird.width, height: cfg.bird.height };
 
-  velocityY = 0;
-  birdTiltDeg = 0;
-  flapAnimStart = 0;
-  flapAnimEnd = 0;
+  velocityY = 0; birdTiltDeg = 0; flapAnimStart = 0; flapAnimEnd = 0;
+  gameStarted = false; graceUntilTs = 0; paused = false; lastTs = 0;
+  activeTimeMs = 0; timeRampStartTs = 0; lastFlapTs = -1;
 
-  gameStarted = false;
-  graceUntilTs = 0;
-  paused = false;
-  lastTs = 0;
-
-  activeTimeMs = 0;
-  timeRampStartTs = 0;
-
-  lastFlapTs = -1;
-
-  if (spawnTimerId) {
-    clearInterval(spawnTimerId);
-    spawnTimerId = null;
-  }
+  if (spawnTimerId) { clearInterval(spawnTimerId); spawnTimerId = null; }
 }
 
 function startSpawning() {
   if (spawnTimerId) clearInterval(spawnTimerId);
   spawnTimerId = setInterval(placePipes, cfg.spawn.intervalMs);
+}
+
+// util: trava/destrava o jogo enquanto um modal externo (cadastro) está aberto
+async function withUiLock(promiseLike) {
+  uiLocked = true;
+  try { await promiseLike; }
+  finally { uiLocked = false; }
 }
 
 // ================== LOOP ==================
@@ -404,47 +343,22 @@ function update(ts) {
   lastTs = nowTs;
   const t = dt / 16.667;
 
-  // fundo
-  ctx.fillStyle = cfg.board.background;
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-  if (screen !== "game") {
-    // desenha título leve no fundo
-    ctx.save();
-    ctx.globalAlpha = 0.08;
-    ctx.fillStyle = "#000";
-    ctx.font = "bold 56px system-ui, sans-serif";
-    ctx.fillText("FLAPPY", 30, 120);
-    ctx.restore();
-    return;
-  }
-
   if (gameStarted && !paused && !gameOver && nowTs >= timeRampStartTs) activeTimeMs += dt;
 
+  ctx.fillStyle = cfg.board.background; ctx.fillRect(0, 0, canvas.width, canvas.height);
   drawHUD();
 
-  if (!gameStarted) {
-    drawBirdWithTilt();
-    return;
-  }
+  if (!gameStarted) { if (bird) drawBirdWithTilt(); return; }
   if (paused) {
-    ctx.fillStyle = "#00000055";
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-    ctx.fillStyle = "#fff";
-    ctx.font = "28px sans-serif";
-    ctx.fillText("PAUSADO", 5, 90);
+    ctx.fillStyle = '#00000055'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = '#fff'; ctx.font = '28px sans-serif'; ctx.fillText('PAUSADO', 5, 90);
     return;
   }
   if (gameOver) return;
 
   const inGrace = performance.now() < graceUntilTs;
-  if (inGrace) {
-    velocityY += cfg.physics.gravity * t;
-    if (velocityY > 0) velocityY = 0;
-  } else {
-    velocityY += cfg.physics.gravity * t;
-    if (velocityY > cfg.bird.maxFallSpeed) velocityY = cfg.bird.maxFallSpeed;
-  }
+  if (inGrace) { velocityY += cfg.physics.gravity * t; if (velocityY > 0) velocityY = 0; }
+  else { velocityY += cfg.physics.gravity * t; if (velocityY > cfg.bird.maxFallSpeed) velocityY = cfg.bird.maxFallSpeed; }
   bird.y = Math.max(bird.y + velocityY * t, 0);
 
   updateBirdTilt(t);
@@ -458,13 +372,7 @@ function update(ts) {
     p.x += scroll * t;
     tryDrawImage(p.img, p.x, p.y, p.width, p.height);
 
-    if (!p.passed && bird.x > p.x + p.width) {
-      score += cfg.scoring.pointsPerPipe;
-      p.passed = true;
-      try {
-        SFX.score?.play();
-      } catch { }
-    }
+    if (!p.passed && bird.x > p.x + p.width) { score += cfg.scoring.pointsPerPipe; p.passed = true; try { SFX.score?.play(); } catch { } }
     if (collides(bird, p)) triggerGameOver();
   }
   while (pipeArray.length > 0 && pipeArray[0].x < -cfg.pipes.width) pipeArray.shift();
@@ -473,9 +381,7 @@ function update(ts) {
 function triggerGameOver() {
   if (gameOver) return;
   gameOver = true;
-  try {
-    SFX.hit?.play();
-  } catch { }
+  try { SFX.hit?.play(); } catch { }
   if (!gameOverHandled) {
     gameOverHandled = true;
     handleGameOverSave().catch(() => { });
@@ -485,25 +391,17 @@ function triggerGameOver() {
 // ================== HUD / TILT ==================
 function currentScrollSpeed() {
   const base = Math.abs(cfg.pipes.scrollSpeed);
-  const scoreExtra = cfg.difficulty?.rampEnabled
-    ? (cfg.difficulty.speedPerScore || 0) * score
-    : 0;
+  const scoreExtra = cfg.difficulty?.rampEnabled ? (cfg.difficulty.speedPerScore || 0) * score : 0;
   const sec = activeTimeMs / 1000;
   const timeExtra = cfg.difficulty?.timeRampEnabled
-    ? Math.min(
-      cfg.difficulty.timeMaxExtraSpeed ?? Infinity,
-      (cfg.difficulty.timeSpeedPerSec || 0) * sec
-    )
+    ? Math.min(cfg.difficulty.timeMaxExtraSpeed ?? Infinity, (cfg.difficulty.timeSpeedPerSec || 0) * sec)
     : 0;
   return -(base + scoreExtra + timeExtra);
 }
 
 function updateBirdTilt(tFactor) {
   const tcfg = cfg.bird.tilt;
-  if (!tcfg?.enabled) {
-    birdTiltDeg = 0;
-    return;
-  }
+  if (!tcfg?.enabled) { birdTiltDeg = 0; return; }
   const vUpRef = -Math.abs(tcfg.velForMaxUp ?? cfg.bird.flapForce);
   const vDownRef = Math.abs(tcfg.velForMaxDown ?? cfg.bird.maxFallSpeed);
   const targetDeg = mapRangeClamped(velocityY, vUpRef, vDownRef, tcfg.upDeg, tcfg.downDeg);
@@ -512,6 +410,8 @@ function updateBirdTilt(tFactor) {
 }
 
 function drawBirdWithTilt() {
+  if (!bird) return;
+
   const cx = bird.x + bird.width / 2;
   const cy = bird.y + bird.height / 2;
   const now = performance.now();
@@ -530,10 +430,7 @@ function drawBirdWithTilt() {
   ctx.rotate(deg2rad(birdTiltDeg));
 
   if (img) ctx.drawImage(img, -bird.width / 2, -bird.height / 2, bird.width, bird.height);
-  else {
-    ctx.fillStyle = "#fbbf24";
-    ctx.fillRect(-bird.width / 2, -bird.height / 2, bird.width, bird.height);
-  }
+  else { ctx.fillStyle = '#fbbf24'; ctx.fillRect(-bird.width / 2, -bird.height / 2, bird.width, bird.height); }
 
   ctx.restore();
 }
@@ -551,18 +448,14 @@ function placePipes() {
   const baseGap = cfg.pipes.gapPercent;
   const scoreStep = cfg.difficulty?.gapStepPerScore ?? 0;
   const minGap = cfg.difficulty?.minGapPercent ?? baseGap;
-  let gapPercent = cfg.difficulty?.rampEnabled ? baseGap - score * scoreStep : baseGap;
-  if (cfg.difficulty?.timeRampEnabled)
-    gapPercent -= (cfg.difficulty.timeGapStepPerSec || 0) * (activeTimeMs / 1000);
+  let gapPercent = cfg.difficulty?.rampEnabled ? (baseGap - score * scoreStep) : baseGap;
+  if (cfg.difficulty?.timeRampEnabled) gapPercent -= (cfg.difficulty.timeGapStepPerSec || 0) * (activeTimeMs / 1000);
   gapPercent = Math.max(minGap, gapPercent);
   const gap = (canvas.height * gapPercent) / 100;
 
-  const w0 = cfg.pipes.width;
-  let h0 = cfg.pipes.height;
+  const w0 = cfg.pipes.width; let h0 = cfg.pipes.height;
   if (cfg.pipes?.autoStretchToEdges) {
-    const needed = Math.ceil(
-      (canvas.height - gap) / 2 + (cfg.pipes.edgeOverflowPx ?? 0)
-    );
+    const needed = Math.ceil(((canvas.height - gap) / 2) + (cfg.pipes.edgeOverflowPx ?? 0));
     if (h0 < needed) h0 = needed;
   }
 
@@ -572,29 +465,19 @@ function placePipes() {
   let botY = topY + h0 + gap;
 
   const bottomBottom = botY + h0;
-  if (bottomBottom < canvas.height) {
-    const d = canvas.height - bottomBottom;
-    topY += d;
-    botY += d;
-  }
-  if (topY > 0) {
-    const d = topY;
-    topY -= d;
-    botY -= d;
-  }
+  if (bottomBottom < canvas.height) { const d = canvas.height - bottomBottom; topY += d; botY += d; }
+  if (topY > 0) { const d = topY; topY -= d; botY -= d; }
 
   pipeArray.push(
     { img: topPipeImg, x: canvas.width, y: topY, width: w0, height: h0, passed: false },
-    { img: bottomPipeImg, x: canvas.width, y: botY, width: w0, height: h0, passed: false }
+    { img: bottomPipeImg, x: canvas.width, y: botY, width: w0, height: h0, passed: false },
   );
 }
 
 function collides(a, b) {
   const pad = Math.max(0, cfg.bird.hitboxPadding || 0);
-  const ax = a.x + pad,
-    ay = a.y + pad;
-  const aw = a.width - pad * 2,
-    ah = a.height - pad * 2;
+  const ax = a.x + pad, ay = a.y + pad;
+  const aw = a.width - pad * 2, ah = a.height - pad * 2;
   return ax < b.x + b.width && ax + aw > b.x && ay < b.y + b.height && ay + ah > b.y;
 }
 
@@ -605,9 +488,9 @@ async function salvarScoreNoSupabase(pontos) {
   const player = getLocalPlayer();
   const payload = {
     run_id: String(runId),
-    player_name: player.nome || "Anônimo",
-    email: player.email || "anon@demo.com",
-    telefone: player.telefone || "",
+    player_name: player.nome || 'Anônimo',
+    email: player.email || 'anon@demo.com',
+    telefone: player.telefone || '',
     score: Number(pontos),
     win: false,
     played_at: new Date().toISOString(),
@@ -628,204 +511,231 @@ async function fetchTop10FromSupabase() {
   if (!supabase) return [];
   const { data, error } = await supabase
     .from(SUPABASE_SCORES_TABLE)
-    .select("player_name, score, played_at")
-    .order("score", { ascending: false })
+    .select('player_name, score, played_at')
+    .order('score', { ascending: false })
     .limit(10);
-  if (error) {
-    console.warn("[Supabase] top10 erro:", error);
-    return [];
-  }
+  if (error) { console.warn('[Supabase] top10 erro:', error); return []; }
   return data || [];
 }
 
-// ================== OVERLAYS: START & SCORES ==================
+// ================== OVERLAY: START ==================
 function ensureStartOverlay() {
-  if (document.getElementById("startStyles")) return;
+  if (document.getElementById('startStyles')) return;
 
-  const st = document.createElement("style");
-  st.id = "startStyles";
+  const st = document.createElement('style');
+  st.id = 'startStyles';
   st.textContent = `
-  .overlay{position:fixed;inset:0;display:none;place-items:center;z-index:999}
-  .overlay.show{display:grid}
-  .overlay .backdrop{position:absolute;inset:0;background:rgba(0,0,0,.55);backdrop-filter: blur(2px)}
-  .overlay .card{position:relative;background:#0f172a;border:1px solid #1f2937;border-radius:16px;padding:18px;min-width:320px;max-width:92vw;color:#e5e7eb;box-shadow:0 10px 30px #0009}
-  .title{font:700 24px/1.2 system-ui;margin:0 0 12px}
-  .subtitle{font:400 12px/1.4 system-ui;color:#94a3b8;margin:2px 0 12px}
-  .row{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
-  .btn{appearance:none;border:1px solid #334155;background:#111827;color:#e5e7eb;padding:10px 14px;border-radius:10px;cursor:pointer;font-size:14px}
-  .btn:hover{background:#1f2937}
-  .list{max-height:320px;overflow:auto;margin-top:6px;border-top:1px solid #1f2937;padding-top:6px}
-  .item{display:grid;grid-template-columns: 36px 1fr auto;align-items:center;gap:8px;padding:6px 4px;border-bottom:1px dashed #1f2937}
-  .muted{color:#94a3b8;font-size:12px}
-  .rank{opacity:.85}
-  .pts{font-weight:700}
+    #startOverlay{position:fixed;inset:0;display:none;place-items:center;z-index:999}
+    #startOverlay.show{display:grid}
+    #startOverlay .backdrop{position:absolute;inset:0;background:rgba(0,0,0,.55);backdrop-filter: blur(2px)}
+    #startOverlay .card{position:relative;background:#0f172a;border:1px solid #1f2937;border-radius:16px;padding:16px;min-width:320px;max-width:92vw;color:#e5e7eb;box-shadow:0 10px 30px #0009}
+    #startOverlay .title{font:600 22px/1.2 system-ui;margin:0 0 12px}
+    #startOverlay .row{display:flex;gap:10px;flex-wrap:wrap;margin-top:10px}
+    #startOverlay .btn{appearance:none;border:1px solid #334155;background:#111827;color:#e5e7eb;padding:10px 14px;border-radius:10px;cursor:pointer;font-size:14px}
+    #startOverlay .btn:hover{background:#1f2937}
   `;
   document.head.appendChild(st);
 
-  // START
-  startOverlay = document.createElement("div");
-  startOverlay.id = "startOverlay";
-  startOverlay.className = "overlay";
+  startOverlay = document.createElement('div');
+  startOverlay.id = 'startOverlay';
   startOverlay.innerHTML = `
     <div class="backdrop"></div>
     <div class="card">
-      <h3 class="title">Flappy</h3>
-      <div class="subtitle">Use espaço, seta ↑ ou X para pular. F9 limpa config local.</div>
+      <h3 class="title">Flappy + Supabase</h3>
       <div class="row">
-        <button id="btnStartPlay" class="btn">Começar</button>
-        <button id="btnStartScores" class="btn">Scores</button>
+        <button id="btnStart"  class="btn">Começar</button>
+        <button id="btnScores" class="btn">Scores</button>
       </div>
     </div>
   `;
   document.body.appendChild(startOverlay);
 
-  // SCORES
-  scoresOverlay = document.createElement("div");
-  scoresOverlay.id = "scoresOverlay";
-  scoresOverlay.className = "overlay";
+  document.getElementById('btnStart')?.addEventListener('click', async () => {
+    // cadastro no começo de TODO jogo
+    await withUiLock(ensureCadastro());
+    hideStartOverlay();
+    startNewRun(); // reseta estado
+  });
+
+  document.getElementById('btnScores')?.addEventListener('click', () => {
+    showScoresOverlay();
+  });
+}
+
+function showStartOverlay() {
+  startOverlay?.classList.add('show');
+  uiLocked = true;
+}
+function hideStartOverlay() {
+  startOverlay?.classList.remove('show');
+  uiLocked = false;
+}
+
+// ================== OVERLAY: SCORES (Top 10) ==================
+function ensureScoresOverlay() {
+  if (document.getElementById('scoresStyles')) return;
+
+  const st = document.createElement('style');
+  st.id = 'scoresStyles';
+  st.textContent = `
+    #scoresOverlay{position:fixed;inset:0;display:none;place-items:center;z-index:1000}
+    #scoresOverlay.show{display:grid}
+    #scoresOverlay .backdrop{position:absolute;inset:0;background:rgba(0,0,0,.55);backdrop-filter: blur(2px)}
+    #scoresOverlay .card{position:relative;background:#0f172a;border:1px solid #1f2937;border-radius:16px;padding:16px;min-width:320px;max-width:92vw;color:#e5e7eb;box-shadow:0 10px 30px #0009}
+    #scoresOverlay .title{font:600 20px/1.2 system-ui;margin:0 0 8px}
+    #scoresOverlay .list{max-height:260px;overflow:auto;margin-top:6px;border-top:1px solid #1f2937;padding-top:6px}
+    #scoresOverlay .item{display:grid;grid-template-columns: 36px 1fr auto;align-items:center;gap:8px;padding:6px 4px;border-bottom:1px dashed #1f2937}
+    #scoresOverlay .muted{color:#94a3b8;font-size:12px}
+    #scoresOverlay .row{display:flex;gap:8px;margin-top:10px}
+    #scoresOverlay .btn{appearance:none;border:1px solid #334155;background:#111827;color:#e5e7eb;padding:8px 12px;border-radius:10px;cursor:pointer;font-size:14px}
+    #scoresOverlay .btn:hover{background:#1f2937}
+  `;
+  document.head.appendChild(st);
+
+  scoresOverlay = document.createElement('div');
+  scoresOverlay.id = 'scoresOverlay';
   scoresOverlay.innerHTML = `
     <div class="backdrop"></div>
     <div class="card">
-      <h3 class="title">Ranking (Top 10)</h3>
-      <div class="subtitle" id="scoresYourScore"></div>
+      <h3 class="title">Top 10</h3>
       <div id="scoresList" class="list"></div>
-      <div class="row" style="margin-top:12px">
-        <button id="btnScoresPlayAgain" class="btn">Jogar novamente</button>
+      <div class="row">
         <button id="btnScoresBack" class="btn">Voltar</button>
       </div>
     </div>
   `;
   document.body.appendChild(scoresOverlay);
 
-  // handlers
-  document.getElementById("btnStartPlay")?.addEventListener("click", async () => {
-    await startNewGame(); // <- sempre abre cadastro
-  });
-  document.getElementById("btnStartScores")?.addEventListener("click", async () => {
-    await showScoresOverlay(); // sem score pessoal
-  });
-
-  document.getElementById("btnScoresBack")?.addEventListener("click", () => {
+  document.getElementById('btnScoresBack')?.addEventListener('click', () => {
     hideScoresOverlay();
     showStartOverlay();
   });
-  document
-    .getElementById("btnScoresPlayAgain")
-    ?.addEventListener("click", async () => {
-      hideScoresOverlay();
-      await startNewGame(); // <- sempre abre cadastro
-    });
-}
-
-function showStartOverlay() {
-  uiLocked = true;
-  screen = "start";
-  startOverlay?.classList.add("show");
-}
-function hideStartOverlay() {
-  startOverlay?.classList.remove("show");
-  // uiLocked = false é liberado quando realmente entramos no jogo
 }
 
 async function showScoresOverlay() {
+  scoresOverlay?.classList.add('show');
   uiLocked = true;
-  screen = "scores";
-  const myEl = document.getElementById("scoresYourScore");
-  myEl.textContent =
-    typeof lastFinalScore === "number"
-      ? `Seu score: ${lastFinalScore}`
-      : "Veja as melhores pontuações:";
+
+  const list = document.getElementById('scoresList');
+  if (list) list.innerHTML = `<div class="muted">Carregando…</div>`;
 
   const rows = await fetchTop10FromSupabase();
-  renderTop10List(rows);
-
-  scoresOverlay?.classList.add("show");
+  renderTop10ListTo(list, rows);
 }
 function hideScoresOverlay() {
-  scoresOverlay?.classList.remove("show");
-  lastFinalScore = null;
+  scoresOverlay?.classList.remove('show');
+  uiLocked = false;
 }
 
-// render lista
-function renderTop10List(rows) {
-  const list = document.getElementById("scoresList");
-  if (!list) return;
-  if (!rows || rows.length === 0) {
-    list.innerHTML = `<div class="muted">Sem scores no servidor ainda.</div>`;
-    return;
-  }
-  list.innerHTML = rows
-    .map(
-      (r, i) => `
-    <div class="item">
-      <div class="rank">#${i + 1}</div>
-      <div>
-        <div>${r.player_name || "Anônimo"}</div>
-        ${r.played_at
-          ? `<div class="muted" style="font-size:12px">${new Date(
-            r.played_at
-          ).toLocaleString()}</div>`
-          : ""
-        }
+function renderTop10ListTo(listEl, rows) {
+  if (!listEl) return;
+  listEl.innerHTML = rows?.length
+    ? rows.map((r, i) => `
+        <div class="item">
+          <div class="rank">#${i + 1}</div>
+          <div>
+            <div>${r.player_name || 'Anônimo'}</div>
+            ${r.played_at ? `<div class="muted" style="font-size:12px">${new Date(r.played_at).toLocaleString()}</div>` : ''}
+          </div>
+          <div class="pts">${r.score ?? 0}</div>
+        </div>
+      `).join('')
+    : `<div class="muted">Sem scores no servidor ainda.</div>`;
+}
+
+// ================== OVERLAY: GAME OVER ==================
+function ensureGameOverOverlay() {
+  if (document.getElementById('goStyles')) return;
+
+  const st = document.createElement('style');
+  st.id = 'goStyles';
+  st.textContent = `
+    #goOverlay{position:fixed;inset:0;display:none;place-items:center;z-index:1100}
+    #goOverlay.show{display:grid}
+    #goOverlay .backdrop{position:absolute;inset:0;background:rgba(0,0,0,.55);backdrop-filter: blur(2px)}
+    #goOverlay .card{position:relative;background:#0f172a;border:1px solid #1f2937;border-radius:16px;padding:16px;min-width:320px;max-width:92vw;color:#e5e7eb;box-shadow:0 10px 30px #0009}
+    #goOverlay .title{font:600 20px/1.2 system-ui;margin:0 0 8px}
+    #goOverlay .score{font:700 36px/1.2 system-ui;margin:0 10px 10px 0;color:#86efac;display:inline-block}
+    #goOverlay .row{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
+    #goOverlay .btn{appearance:none;border:1px solid #334155;background:#111827;color:#e5e7eb;padding:10px 14px;border-radius:10px;cursor:pointer;font-size:14px}
+    #goOverlay .btn:hover{background:#1f2937}
+    #goOverlay .list{max-height:260px;overflow:auto;margin-top:6px;border-top:1px solid #1f2937;padding-top:6px}
+    #goOverlay .item{display:grid;grid-template-columns:36px 1fr auto;align-items:center;gap:8px;padding:6px 4px;border-bottom:1px dashed #1f2937}
+    #goOverlay .muted{color:#94a3b8;font-size:12px}
+    #goOverlay .rank{opacity:.85}
+    #goOverlay .pts{font-weight:700}
+  `;
+  document.head.appendChild(st);
+
+  goOverlay = document.createElement('div');
+  goOverlay.id = 'goOverlay';
+  goOverlay.innerHTML = `
+    <div class="backdrop"></div>
+    <div class="card" role="dialog" aria-modal="true" aria-labelledby="goTitle">
+      <h3 id="goTitle" class="title">Game Over</h3>
+      <div><span id="goScore" class="score">0</span></div>
+      <div class="row">
+        <button id="goReplay" class="btn">Jogar de novo</button>
+        <button id="goEditProfile" class="btn">Editar cadastro</button>
+        <button id="goBackStart" class="btn">Voltar ao início</button>
       </div>
-      <div class="pts">${r.score ?? 0}</div>
-    </div>`
-    )
-    .join("");
+      <div class="muted">Top 10 (Supabase):</div>
+      <div id="goList" class="list"></div>
+    </div>
+  `;
+  document.body.appendChild(goOverlay);
+
+  document.getElementById('goReplay')?.addEventListener('click', async () => {
+    await withUiLock(ensureCadastro()); // cadastro no começo de TODO jogo
+    hideGameOverOverlay();
+    startNewRun();
+  });
+
+  document.getElementById('goEditProfile')?.addEventListener('click', async () => {
+    await withUiLock(showCadastroModal());
+  });
+
+  document.getElementById('goBackStart')?.addEventListener('click', () => {
+    hideGameOverOverlay();
+    showStartOverlay();
+  });
 }
 
-// ================== FLUXO: COMEÇAR JOGO (sempre com cadastro) ==================
-async function startNewGame() {
-  // força cadastro no início de TODO JOGO:
-  await showCadastroModal();
+async function showGameOverOverlay(finalScore) {
+  goOverlay?.classList.add('show');
+  uiLocked = true;
 
-  // inicia a run
-  startNewRun();
-  hideStartOverlay();
-  hideScoresOverlay();
-  screen = "game";
+  const scoreEl = document.getElementById('goScore');
+  if (scoreEl) scoreEl.textContent = String(finalScore);
+
+  const rows = await fetchTop10FromSupabase();
+  const list = document.getElementById('goList');
+  renderTop10ListTo(list, rows);
+}
+
+function hideGameOverOverlay() {
+  goOverlay?.classList.remove('show');
   uiLocked = false;
 }
 
 // ================== PERSISTÊNCIA FIM DE JOGO ==================
 async function handleGameOverSave() {
-  try {
-    await salvarScoreNoSupabase(score);
-  } catch (e) {
-    console.warn("[Supabase] falha ao salvar:", e);
-  } finally {
-    lastFinalScore = score;
-    await showScoresOverlay(); // jogo -> ranking
-    // o usuário volta para START pelo botão "Voltar", cumprindo: ranking -> start
-  }
+  try { await salvarScoreNoSupabase(score); }
+  catch (e) { console.warn('[Supabase] falha ao salvar:', e); }
+  finally { await showGameOverOverlay(score); }
 }
 
 // ================== HELPERS ==================
-function clamp(n, min, max) {
-  return Math.max(min, Math.min(max, n));
-}
-function lerp(a, b, t) {
-  return a + (b - a) * t;
-}
-function deg2rad(d) {
-  return (d * Math.PI) / 180;
-}
+function clamp(n, min, max) { return Math.max(min, Math.min(max, n)); }
+function lerp(a, b, t) { return a + (b - a) * t; }
+function deg2rad(d) { return (d * Math.PI) / 180; }
 function mapRangeClamped(v, inMin, inMax, outMin, outMax) {
   if (inMax === inMin) return outMin;
   const t = clamp((v - inMin) / (inMax - inMin), 0, 1);
   return outMin + t * (outMax - outMin);
 }
-function okImg(im) {
-  return !!(im && im.complete && im.naturalWidth > 0);
-}
+function okImg(im) { return !!(im && im.complete && im.naturalWidth > 0); }
 function tryDrawImage(im, x, y, w, h) {
   if (okImg(im)) ctx.drawImage(im, x, y, w, h);
-  else {
-    ctx.save();
-    ctx.fillStyle = "#2dd4bf33";
-    ctx.fillRect(x, y, w, h);
-    ctx.strokeStyle = "#ef4444";
-    ctx.strokeRect(x, y, w, h);
-    ctx.restore();
-  }
+  else { ctx.save(); ctx.fillStyle = '#2dd4bf33'; ctx.fillRect(x, y, w, h); ctx.strokeStyle = '#ef4444'; ctx.strokeRect(x, y, w, h); ctx.restore(); }
 }
