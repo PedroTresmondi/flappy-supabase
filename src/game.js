@@ -7,17 +7,27 @@ import { showCadastroModal, getLocalPlayer } from "./ui/cadastroModal";
 // ================== CONSTANTES ==================
 const KEY = "flappy:config";
 const SUPABASE_SCORES_TABLE = "scores";
+const BASE = import.meta.env.BASE_URL;
 
 // assets padrão (devem existir em public/assets/img/)
 const DEFAULT_ASSETS = {
   birdFrames: [
-    "/assets/img/flappybird1.png",
-    "/assets/img/flappybird2.png",
-    "/assets/img/flappybird3.png",
+    'assets/img/flappybird1.png',
+    'assets/img/flappybird2.png',
+    'assets/img/flappybird3.png',
   ],
-  topPipe: "/assets/img/toppipe.png",
-  bottomPipe: "/assets/img/bottompipe.png",
+  topPipe: 'assets/img/toppipe.png',
+  bottomPipe: 'assets/img/bottompipe.png',
 };
+
+function fromPublic(p) {
+  if (!p) return '';
+  const s = String(p).trim();
+  // URLs absolutas continuam como estão
+  if (/^(https?:|data:|blob:)/i.test(s)) return s;
+  // remove './' ou '/' iniciais e prefixa BASE
+  return `${BASE}${s.replace(/^\.?\/*/, '')}`;
+}
 
 // config padrão
 const DEFAULT_CONFIG = {
@@ -141,12 +151,12 @@ async function loadConfigSanitized() {
 
   // flappy-config.json (opcional)
   try {
-    const res = await fetch("/flappy-config.json", { cache: "no-store" });
+    const res = await fetch(`${BASE}flappy-config.json`, { cache: 'no-store' });
     if (res.ok) {
       const fileCfg = await res.json();
       merged = deepMerge(merged, fileCfg || {});
     }
-  } catch {}
+  } catch { }
 
   // localStorage (sem assets para evitar blob:)
   try {
@@ -156,7 +166,7 @@ async function loadConfigSanitized() {
       const { assets: _ignoredAssets, ...rest } = localCfg || {};
       merged = deepMerge(merged, rest || {});
     }
-  } catch {}
+  } catch { }
 
   merged.assets = sanitizeAssets(merged.assets);
   return merged;
@@ -230,7 +240,7 @@ function loadAssets() {
         console.warn("[assets] falhou frame:", src);
         done();
       };
-      im.src = src;
+      im.src = fromPublic(src);
       birdImgs.push(im);
     });
 
@@ -241,7 +251,7 @@ function loadAssets() {
       topPipeImg = null;
       done();
     };
-    topPipeImg.src = cfg.assets.topPipe;
+    topPipeImg.src = fromPublic(cfg.assets.topPipe);
 
     bottomPipeImg = new Image();
     bottomPipeImg.onload = done;
@@ -250,7 +260,8 @@ function loadAssets() {
       bottomPipeImg = null;
       done();
     };
-    bottomPipeImg.src = cfg.assets.bottomPipe;
+
+    bottomPipeImg.src = fromPublic(cfg.assets.bottomPipe);
 
     ["flap", "score", "hit"].forEach((k) => {
       const url = cfg.assets?.sfx?.[k];
@@ -272,7 +283,7 @@ function setupControls() {
     if (e.code === "F9") {
       try {
         localStorage.removeItem(KEY);
-      } catch {}
+      } catch { }
       location.reload();
       return;
     }
@@ -325,7 +336,7 @@ function onJumpKey(e) {
   velocityY = -Math.abs(cfg.bird.flapForce);
   try {
     SFX.flap?.play();
-  } catch {}
+  } catch { }
   navigator.vibrate?.(10);
 
   const t = cfg.bird.tilt;
@@ -452,7 +463,7 @@ function update(ts) {
       p.passed = true;
       try {
         SFX.score?.play();
-      } catch {}
+      } catch { }
     }
     if (collides(bird, p)) triggerGameOver();
   }
@@ -464,10 +475,10 @@ function triggerGameOver() {
   gameOver = true;
   try {
     SFX.hit?.play();
-  } catch {}
+  } catch { }
   if (!gameOverHandled) {
     gameOverHandled = true;
-    handleGameOverSave().catch(() => {});
+    handleGameOverSave().catch(() => { });
   }
 }
 
@@ -480,9 +491,9 @@ function currentScrollSpeed() {
   const sec = activeTimeMs / 1000;
   const timeExtra = cfg.difficulty?.timeRampEnabled
     ? Math.min(
-        cfg.difficulty.timeMaxExtraSpeed ?? Infinity,
-        (cfg.difficulty.timeSpeedPerSec || 0) * sec
-      )
+      cfg.difficulty.timeMaxExtraSpeed ?? Infinity,
+      (cfg.difficulty.timeSpeedPerSec || 0) * sec
+    )
     : 0;
   return -(base + scoreExtra + timeExtra);
 }
@@ -750,12 +761,11 @@ function renderTop10List(rows) {
       <div class="rank">#${i + 1}</div>
       <div>
         <div>${r.player_name || "Anônimo"}</div>
-        ${
-          r.played_at
-            ? `<div class="muted" style="font-size:12px">${new Date(
-                r.played_at
-              ).toLocaleString()}</div>`
-            : ""
+        ${r.played_at
+          ? `<div class="muted" style="font-size:12px">${new Date(
+            r.played_at
+          ).toLocaleString()}</div>`
+          : ""
         }
       </div>
       <div class="pts">${r.score ?? 0}</div>
