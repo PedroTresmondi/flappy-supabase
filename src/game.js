@@ -16,6 +16,12 @@ const joinBase = (p) => {
 // ================== CONSTANTES ==================
 const KEY = 'flappy:config';
 const SUPABASE_SCORES_TABLE = 'scores';
+const SUPABASE_CONFIG_TABLE = 'flappy_config';
+const CONFIG_SLUG = localStorage.getItem('flappy:configSlug') || 'default';
+
+// Mundo lógico base (360×640) e alvo visual (1080×1920)
+const BASE_W = 360, BASE_H = 640;
+const TARGET_W = 1080, TARGET_H = 1920;
 
 // assets padrão (devem existir em public/assets/img/)
 const DEFAULT_ASSETS = {
@@ -26,16 +32,42 @@ const DEFAULT_ASSETS = {
   ],
   topPipe: 'assets/img/toppipe.png',
   bottomPipe: 'assets/img/bottompipe.png',
+  bg: '' // ex: 'assets/img/bg-2160x1920.jpg'
 };
 
-// config padrão
+// ================== CONFIG ==================
+async function fetchRemoteConfigFromSupabase(slug = CONFIG_SLUG) {
+  if (!supabase) return null;
+  try {
+    const { data, error } = await supabase
+      .from(SUPABASE_CONFIG_TABLE)
+      .select('data')
+      .eq('slug', String(slug || 'default'))
+      .maybeSingle();
+    if (error) { console.warn('[Supabase] config erro:', error); return null; }
+    return data?.data || null;
+  } catch (e) {
+    console.warn('[Supabase] config exception:', e);
+    return null;
+  }
+}
+
+// config padrão (pensado para BASE_W×BASE_H)
 const DEFAULT_CONFIG = {
-  board: { width: 360, height: 640, background: '#70c5ce' },
+  board: { width: BASE_W, height: BASE_H, background: '#70c5ce' },
   assets: { ...DEFAULT_ASSETS, sfx: { flap: '', score: '', hit: '' } },
+  // Parallax do BG: por padrão 0.5 da velocidade dos canos; se quiser fixa, use fixedPxPerSec > 0
+  bg: {
+    parallaxFactor: 0.5,
+    fixedPxPerSec: 0
+  },
   bird: {
     width: 34, height: 24,
     startXPercent: 12.5, startYPercent: 50,
     flapForce: 6, maxFallSpeed: 12, hitboxPadding: 2,
+    // Autosize (opcional): % da altura do canvas. Se respectSizePercent = true, sempre usa.
+    sizePercentOfHeight: 0,
+    respectSizePercent: false,
     tilt: {
       enabled: true, upDeg: -25, downDeg: 70, responsiveness: 0.15,
       velForMaxUp: 6, velForMaxDown: 12, snapOnFlap: true, minDeg: -45, maxDeg: 90
@@ -46,7 +78,8 @@ const DEFAULT_CONFIG = {
   pipes: {
     width: 64, height: 512, scrollSpeed: 2, gapPercent: 25,
     randomBasePercent: 25, randomRangePercent: 50,
-    autoStretchToEdges: false, edgeOverflowPx: 0
+    autoStretchToEdges: false, edgeOverflowPx: 0,
+    // minHorizontalSpacingPx: 520 // opcional; senão calculo é automático
   },
   difficulty: {
     rampEnabled: false, speedPerScore: 0.05, minGapPercent: 18, gapStepPerScore: 0.2,
@@ -64,29 +97,39 @@ const DEFAULT_CONFIG = {
     minFlapIntervalMs: 120,
     allowHoldToFlap: false
   },
-  gameplay: { restartOnJump: true, gracePeriodMs: 100, pauseKey: 'KeyP' }
+  gameplay: { restartOnJump: false, gracePeriodMs: 100, pauseKey: 'KeyP' }
 };
 
 // ================== ESTADO ==================
 let cfg = structuredClone(DEFAULT_CONFIG);
 let canvas, ctx;
-let topPipeImg = null, bottomPipeImg = null;
+let topPipeImg = null, bottomPipeImg = null, bgImg = null;
 let birdImgs = [], SFX = {};
 
 let bird, velocityY = 0, pipeArray = [];
-let gameOver = false, gameOverHandled = false, score = 0;
+let isGameOver = false, score = 0;
 let allowedJumpKeys = new Set(), spawnTimerId = null;
 let birdTiltDeg = 0, flapAnimStart = 0, flapAnimEnd = 0;
 let gameStarted = false, graceUntilTs = 0, paused = false, lastTs = 0;
 let activeTimeMs = 0, timeRampStartTs = 0, lastFlapTs = -1;
-let uiLocked = false; // bloqueia apenas a lógica do jogo (não bloqueia digitação)
+let uiLocked = false;
 
 let runId = null, runStartISO = null, runStartPerf = 0;
 let startOverlay = null, scoresOverlay = null, goOverlay = null;
 
-// ================== BOOT (exportado) ==================
+// loop
+let rafId = 0;
+let running = false;
+
+// BG scroll
+let bgScrollX = 0; // em pixels no canvas (após escala)
+
+// ================== BOOT ==================
 export async function boot() {
-  cfg = await loadConfigSanitized();
+  cfg = await loadConfigSanitized();            // merge + sanitize (Supabase prioridade)
+  cfg = forceBoardToTarget(cfg, TARGET_W, TARGET_H);
+  cfg = applyUniformScale(cfg, BASE_W, BASE_H);
+
   setupCanvas();
   await loadAssets();
   setupControls();
@@ -95,50 +138,110 @@ export async function boot() {
   ensureScoresOverlay();
   ensureGameOverOverlay();
 
-  // cria estado inicial (bird etc.) ANTES do loop pra evitar undefined
-  startNewRun();
+  showStartOverlay(); // espera o clique "Começar", que chama startGame()
+}
 
-  // mostra a tela inicial
-  showStartOverlay();
+// ================== CICLO DE VIDA ==================
+function resetRunState() {
+  pipeArray = [];
+  isGameOver = false;
+  score = 0;
 
-  requestAnimationFrame(update);
+  runId = (crypto?.randomUUID?.() || ('run-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8)));
+  runStartISO = new Date().toISOString();
+  runStartPerf = performance.now();
+
+  const startX = (cfg.board.width * cfg.bird.startXPercent) / 100;
+  const startY = (cfg.board.height * cfg.bird.startYPercent) / 100;
+  bird = { x: startX, y: startY, width: cfg.bird.width, height: cfg.bird.height };
+
+  velocityY = 0; birdTiltDeg = 0; flapAnimStart = 0; flapAnimEnd = 0;
+  gameStarted = false; graceUntilTs = 0; paused = false; lastTs = 0;
+  activeTimeMs = 0; timeRampStartTs = 0; lastFlapTs = -1;
+
+  bgScrollX = 0;
+}
+
+export async function startGame() {
+  // cadastro antes de toda partida
+  await withUiLock(ensureCadastro());
+
+  hideStartOverlay();
+  hideScoresOverlay();
+  hideGameOverOverlay();
+
+  resetRunState();
+  stopSpawning();      // sanidade
+  stopGameLoop();      // sanidade
+
+  running = true;
+  scheduleNextSpawn(true);
+  rafId = requestAnimationFrame(tick);
+}
+
+export function gameOver(reason = '') {
+  if (isGameOver) return;
+  isGameOver = true;
+
+  try { SFX.hit?.play(); } catch { }
+  stopSpawning();
+  stopGameLoop();
+
+  // salva e mostra overlay
+  handleGameOverSave().catch(() => { });
+}
+
+function stopGameLoop() {
+  running = false;
+  if (rafId) cancelAnimationFrame(rafId);
+  rafId = 0;
+}
+
+function stopSpawning() {
+  if (spawnTimerId) clearTimeout(spawnTimerId);
+  spawnTimerId = null;
 }
 
 // ================== CONFIG / SANITIZAÇÃO ==================
 async function loadConfigSanitized() {
   let merged = structuredClone(DEFAULT_CONFIG);
 
+  // 1) arquivo opcional
   try {
     const res = await fetch(joinBase('/flappy-config.json'), { cache: 'no-store' });
-    if (res.ok) {
-      const fileCfg = await res.json();
-      merged = deepMerge(merged, fileCfg || {});
-    }
+    if (res.ok) merged = deepMerge(merged, await res.json() || {});
   } catch { }
 
+  // 2) LocalStorage (fallback)
   try {
     const raw = localStorage.getItem(KEY);
     if (raw) {
-      const localCfg = JSON.parse(raw);
-      const { assets: _ignoredAssets, ...rest } = localCfg || {};
+      const { assets: _ignore, ...rest } = JSON.parse(raw) || {};
       merged = deepMerge(merged, rest || {});
     }
   } catch { }
 
+  // 3) Supabase (prioridade)
+  try {
+    const remote = await fetchRemoteConfigFromSupabase();
+    if (remote) merged = deepMerge(merged, remote);
+  } catch (e) {
+    console.warn('[config] falha Supabase:', e);
+  }
+
   merged.assets = sanitizeAssets(merged.assets);
+  console.log('[CFG]', { bird: merged.bird, board: merged.board, bg: merged.assets.bg, bgCfg: merged.bg });
   return merged;
 }
 
 function sanitizeAssets(a) {
   const out = { ...DEFAULT_ASSETS };
-
   const frames = Array.isArray(a?.birdFrames) ? a.birdFrames : [];
   const cleaned = frames.map(normalizeAssetPath).filter(Boolean);
   out.birdFrames = cleaned.length ? unique(cleaned) : DEFAULT_ASSETS.birdFrames;
-
   out.topPipe = normalizeAssetPath(a?.topPipe) || DEFAULT_ASSETS.topPipe;
   out.bottomPipe = normalizeAssetPath(a?.bottomPipe) || DEFAULT_ASSETS.bottomPipe;
-
+  out.bg = normalizeAssetPath(a?.bg) || '';
   out.sfx = a?.sfx || { flap: '', score: '', hit: '' };
   return out;
 }
@@ -157,31 +260,98 @@ function normalizeAssetPath(p) {
 function deepMerge(a, b) {
   const out = Array.isArray(a) ? [...a] : { ...a };
   Object.keys(b || {}).forEach(k => {
-    if (b[k] && typeof b[k] === 'object' && !Array.isArray(b[k])) {
-      out[k] = deepMerge(a?.[k] || {}, b[k]);
-    } else {
-      out[k] = b[k];
-    }
+    if (b[k] && typeof b[k] === 'object' && !Array.isArray(b[k])) out[k] = deepMerge(a?.[k] || {}, b[k]);
+    else out[k] = b[k];
   });
   return out;
 }
 const unique = (arr) => [...new Set(arr)];
 
+// ================== ESCALA PARA 1080×1920 ==================
+function forceBoardToTarget(cfgIn, w, h) {
+  const cfg = structuredClone(cfgIn);
+  cfg.board = cfg.board || {};
+  cfg.board.width = w;
+  cfg.board.height = h;
+  return cfg;
+}
+
+function applyUniformScale(cfgIn, baseW, baseH) {
+  const cfg = structuredClone(cfgIn);
+  const worldW = Number(cfg.board?.width || baseW);
+  const worldH = Number(cfg.board?.height || baseH);
+  const sx = worldW / baseW, sy = worldH / baseH;
+  const S = Math.min(sx, sy);
+
+  if (!(S > 0) || Math.abs(S - 1) < 1e-6) return cfg;
+
+  const mulI = (v) => Math.round(Number(v || 0) * S);
+  const mulF = (v) => Number(v || 0) * S;
+
+  cfg.bird.width = mulI(cfg.bird.width);
+  cfg.bird.height = mulI(cfg.bird.height);
+  cfg.bird.hitboxPadding = mulI(cfg.bird.hitboxPadding);
+
+  cfg.pipes.width = mulI(cfg.pipes.width);
+  cfg.pipes.height = mulI(cfg.pipes.height);
+  cfg.pipes.edgeOverflowPx = mulI(cfg.pipes.edgeOverflowPx);
+
+  cfg.bird.flapForce = mulF(cfg.bird.flapForce);
+  cfg.bird.maxFallSpeed = mulF(cfg.bird.maxFallSpeed);
+  cfg.physics.gravity = mulF(cfg.physics.gravity);
+  cfg.pipes.scrollSpeed = mulF(cfg.pipes.scrollSpeed);
+
+  const baseInt = Math.max(50, Number(cfg.spawn.intervalMs || 1500));
+  cfg.spawn.intervalMs = Math.max(50, Math.round(baseInt / S));
+
+  cfg.ui.font = scaleFontSpec(cfg.ui.font, S);
+  cfg.ui.gameOverFont = scaleFontSpec(cfg.ui.gameOverFont, S);
+
+  cfg._scale = S;
+  return cfg;
+}
+
+function scaleFontSpec(spec, S) {
+  if (typeof spec !== 'string' || !S || !isFinite(S)) return spec;
+  return spec.replace(/(\d+(\.\d+)?)px/ig, (_, n) => `${Math.round(parseFloat(n) * S)}px`);
+}
+
 // ================== CANVAS / ASSETS ==================
 function setupCanvas() {
   canvas = document.getElementById('board') || Object.assign(document.createElement('canvas'), { id: 'board' });
   if (!canvas.isConnected) document.body.appendChild(canvas);
+
+  document.documentElement.style.height = '100%';
+  Object.assign(document.body.style, {
+    margin: '0', height: '100%', display: 'grid', placeItems: 'center',
+    background: cfg.board.background || '#000'
+  });
+
   canvas.width = cfg.board.width;
   canvas.height = cfg.board.height;
-  ctx = canvas.getContext('2d');
+
+  const vw = Math.max(1, window.innerWidth || canvas.width);
+  const vh = Math.max(1, window.innerHeight || canvas.height);
+  const scale = Math.min(vw / canvas.width, vh / canvas.height);
+  canvas.style.width = Math.round(canvas.width * scale) + 'px';
+  canvas.style.height = Math.round(canvas.height * scale) + 'px';
+
+  ctx = canvas.getContext('2d', { alpha: false });
 }
 
 function loadAssets() {
   return new Promise((resolve) => {
     const frames = cfg.assets.birdFrames || [];
-    let toLoad = frames.length + 2;
-    const done = () => { if (--toLoad === 0) { birdImgs = birdImgs.filter(okImg); resolve(); } };
+    let toLoad = frames.length + 3; // +2 pipes +1 bg
+    const done = () => {
+      if (--toLoad === 0) {
+        birdImgs = birdImgs.filter(okImg);
+        applyDynamicBirdAutosize();
+        resolve();
+      }
+    };
 
+    // Bird frames
     birdImgs = [];
     frames.forEach(src => {
       const im = new Image();
@@ -192,6 +362,7 @@ function loadAssets() {
       birdImgs.push(im);
     });
 
+    // Pipes
     topPipeImg = new Image();
     topPipeImg.crossOrigin = "anonymous";
     topPipeImg.onload = done;
@@ -204,11 +375,59 @@ function loadAssets() {
     bottomPipeImg.onerror = () => { console.warn('[assets] bottomPipe falhou:', cfg.assets.bottomPipe); bottomPipeImg = null; done(); };
     bottomPipeImg.src = cfg.assets.bottomPipe;
 
+    // Background (2160×1920) — opcional
+    bgImg = null;
+    const bgUrl = cfg.assets.bg;
+    if (bgUrl) {
+      const im = new Image();
+      im.crossOrigin = "anonymous";
+      im.onload = done;
+      im.onerror = () => { console.warn('[assets] bg falhou:', bgUrl); done(); };
+      im.src = bgUrl;
+      bgImg = im;
+    } else {
+      // Se não tiver BG, “consome” um slot do contador
+      done();
+    }
+
+    // SFX
     ['flap', 'score', 'hit'].forEach(k => {
       const url = cfg.assets?.sfx?.[k];
       if (url) { const a = new Audio(url); a.preload = 'auto'; SFX[k] = a; }
     });
   });
+}
+
+// Redimensiona o pássaro usando % da altura do canvas (se configurado).
+function applyDynamicBirdAutosize() {
+  const percent = Number(cfg.bird?.sizePercentOfHeight || 0);
+  const usePercent = !!cfg.bird?.respectSizePercent && percent > 0;
+
+  const MIN_AUTO_PERCENT = 6;
+  let finalPercent = 0;
+
+  if (usePercent) {
+    finalPercent = percent;
+  } else {
+    const tooSmall = (cfg.bird.height || 0) < canvas.height * 0.04; // <4% da altura
+    if (tooSmall) finalPercent = Math.max(MIN_AUTO_PERCENT, percent || 0);
+  }
+
+  if (finalPercent <= 0) return;
+
+  let ratio = 34 / 24;
+  const ok = birdImgs.find(im => im && im.complete && im.naturalWidth > 0);
+  if (ok && ok.naturalHeight > 0) ratio = ok.naturalWidth / ok.naturalHeight;
+
+  const targetH = Math.round(canvas.height * (finalPercent / 100));
+  const targetW = Math.max(1, Math.round(targetH * ratio));
+
+  cfg.bird.width = targetW;
+  cfg.bird.height = targetH;
+
+  if (bird) { bird.width = targetW; bird.height = targetH; }
+
+  console.log('[auto-bird]', { finalPercent, targetW, targetH });
 }
 
 // ================== CONTROLES ==================
@@ -234,13 +453,9 @@ function setupControls() {
       return;
     }
 
-    // se digitando em inputs/textarea/etc → não intercepta NADA
     if (isTypingTarget(e)) return;
-
-    // com overlay ativo (start/scores/gameover ou modal externo), não mexe no jogo
     if (uiLocked) return;
 
-    // jogo ativo — evita scroll da página com teclas do jogo
     preventScrollForGameKeys(e);
 
     if (e.code === (cfg.gameplay.pauseKey || 'KeyP')) { if (!e.repeat) paused = !paused; return; }
@@ -250,7 +465,6 @@ function setupControls() {
   }, { capture: true });
 
   window.addEventListener('pointerdown', (e) => {
-    // clicando em campos editáveis → não transforma em “pulo”
     if (isTypingTarget(e)) return;
     if (uiLocked) return;
     onJumpKey({ code: cfg.controls.jump?.[0] || 'Space', repeat: false });
@@ -261,6 +475,7 @@ function setupControls() {
 }
 
 function onJumpKey(e) {
+  if (!running) return;
   if (!allowedJumpKeys.has(e.code)) return;
   if (paused) return;
 
@@ -269,10 +484,9 @@ function onJumpKey(e) {
   if (lastFlapTs >= 0 && now - lastFlapTs < minInt) return;
   lastFlapTs = now;
 
-  if (gameOver) {
-    if (!cfg.gameplay.restartOnJump) return;
-    hideGameOverOverlay();
-    startNewRun();
+  if (isGameOver) {
+    if (cfg.gameplay.restartOnJump) startGame();
+    return;
   }
 
   if (!gameStarted) {
@@ -280,7 +494,6 @@ function onJumpKey(e) {
     graceUntilTs = performance.now() + Math.max(0, cfg.gameplay.gracePeriodMs || 0);
     const delay = Math.max(0, cfg.difficulty?.timeStartDelayMs ?? 0);
     timeRampStartTs = graceUntilTs + delay;
-    startSpawning();
   }
 
   velocityY = -Math.abs(cfg.bird.flapForce);
@@ -299,53 +512,24 @@ function onJumpKey(e) {
   }
 }
 
-// ================== VIDA DO JOGO ==================
-function startNewRun() {
-  pipeArray = [];
-  gameOver = false;
-  gameOverHandled = false;
-  score = 0;
-
-  runId = (crypto?.randomUUID?.() || ('run-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8)));
-  runStartISO = new Date().toISOString();
-  runStartPerf = performance.now();
-
-  const startX = (cfg.board.width * cfg.bird.startXPercent) / 100;
-  const startY = (cfg.board.height * cfg.bird.startYPercent) / 100;
-  bird = { x: startX, y: startY, width: cfg.bird.width, height: cfg.bird.height };
-
-  velocityY = 0; birdTiltDeg = 0; flapAnimStart = 0; flapAnimEnd = 0;
-  gameStarted = false; graceUntilTs = 0; paused = false; lastTs = 0;
-  activeTimeMs = 0; timeRampStartTs = 0; lastFlapTs = -1;
-
-  if (spawnTimerId) { clearInterval(spawnTimerId); spawnTimerId = null; }
-}
-
-function startSpawning() {
-  if (spawnTimerId) clearInterval(spawnTimerId);
-  spawnTimerId = setInterval(placePipes, cfg.spawn.intervalMs);
-}
-
-// util: trava/destrava o jogo enquanto um modal externo (cadastro) está aberto
-async function withUiLock(promiseLike) {
-  uiLocked = true;
-  try { await promiseLike; }
-  finally { uiLocked = false; }
-}
-
 // ================== LOOP ==================
-function update(ts) {
-  requestAnimationFrame(update);
+function tick(ts) {
+  if (!running) return;
+
+  rafId = requestAnimationFrame(tick);
 
   if (!lastTs) lastTs = ts || performance.now();
   const nowTs = ts || performance.now();
   const dt = Math.min(50, nowTs - lastTs);
   lastTs = nowTs;
+
+  // Fundo (BG) antes de tudo (ou cor sólida se não houver BG)
+  drawBackground(dt);
+
   const t = dt / 16.667;
 
-  if (gameStarted && !paused && !gameOver && nowTs >= timeRampStartTs) activeTimeMs += dt;
+  if (gameStarted && !paused && !isGameOver && nowTs >= timeRampStartTs) activeTimeMs += dt;
 
-  ctx.fillStyle = cfg.board.background; ctx.fillRect(0, 0, canvas.width, canvas.height);
   drawHUD();
 
   if (!gameStarted) { if (bird) drawBirdWithTilt(); return; }
@@ -354,7 +538,7 @@ function update(ts) {
     ctx.fillStyle = '#fff'; ctx.font = '28px sans-serif'; ctx.fillText('PAUSADO', 5, 90);
     return;
   }
-  if (gameOver) return;
+  if (isGameOver) return;
 
   const inGrace = performance.now() < graceUntilTs;
   if (inGrace) { velocityY += cfg.physics.gravity * t; if (velocityY > 0) velocityY = 0; }
@@ -364,7 +548,7 @@ function update(ts) {
   updateBirdTilt(t);
   drawBirdWithTilt();
 
-  if (bird.y > canvas.height) triggerGameOver();
+  if (bird.y > canvas.height) { gameOver('fell'); return; }
 
   const scroll = currentScrollSpeed();
   for (let i = 0; i < pipeArray.length; i++) {
@@ -373,19 +557,73 @@ function update(ts) {
     tryDrawImage(p.img, p.x, p.y, p.width, p.height);
 
     if (!p.passed && bird.x > p.x + p.width) { score += cfg.scoring.pointsPerPipe; p.passed = true; try { SFX.score?.play(); } catch { } }
-    if (collides(bird, p)) triggerGameOver();
+    if (collides(bird, p)) { gameOver('hit'); return; }
   }
   while (pipeArray.length > 0 && pipeArray[0].x < -cfg.pipes.width) pipeArray.shift();
 }
 
-function triggerGameOver() {
-  if (gameOver) return;
-  gameOver = true;
-  try { SFX.hit?.play(); } catch { }
-  if (!gameOverHandled) {
-    gameOverHandled = true;
-    handleGameOverSave().catch(() => { });
+// ================== BACKGROUND SCROLL ==================
+function drawBackground(dtMs) {
+  if (!okImg(bgImg)) {
+    // Fallback: preenche com a cor do board
+    ctx.fillStyle = cfg.board.background || '#000';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    return;
   }
+
+  // Calcula velocidade do BG
+  const pxPerSecPipes = currentScrollSpeedAbsPerSec(); // velocidade absoluta dos canos
+  const fixed = Number(cfg.bg?.fixedPxPerSec || 0);
+  const factor = Number(cfg.bg?.parallaxFactor ?? 0.5);
+  const bgPxPerSec = fixed > 0 ? fixed : (pxPerSecPipes * factor);
+
+  // Atualiza offset (move da direita para a esquerda → incrementa scroll e desenha para a esquerda)
+  const delta = Math.max(0, dtMs) / 1000;
+  bgScrollX = (bgScrollX + bgPxPerSec * delta) || 0;
+
+  // Desenha “telhas” do BG: imagem 2160×1920 → escala para altura do canvas
+  const imgW = bgImg.naturalWidth, imgH = bgImg.naturalHeight;
+  const scale = canvas.height / imgH;
+  const drawW = Math.ceil(imgW * scale);
+  const drawH = canvas.height;
+
+  // Posição inicial (negativa) e wrap
+  let x = -Math.floor(bgScrollX % drawW);
+
+  // Desenha 2 cópias para cobrir o canvas
+  ctx.drawImage(bgImg, 0, 0, imgW, imgH, x, 0, drawW, drawH);
+  ctx.drawImage(bgImg, 0, 0, imgW, imgH, x + drawW, 0, drawW, drawH);
+}
+
+// ================== SPAWNER ==================
+function startSpawning() {
+  stopSpawning();
+  scheduleNextSpawn(true);
+}
+
+function currentScrollSpeedAbsPerSec() {
+  const base = Math.abs(cfg.pipes.scrollSpeed);
+  const scoreExtra = cfg.difficulty?.rampEnabled ? (cfg.difficulty.speedPerScore || 0) * score : 0;
+  const sec = activeTimeMs / 1000;
+  const timeExtra = cfg.difficulty?.timeRampEnabled
+    ? Math.min(cfg.difficulty.timeMaxExtraSpeed ?? Infinity, (cfg.difficulty.timeSpeedPerSec || 0) * sec)
+    : 0;
+  const pxPerFrame = base + scoreExtra + timeExtra;
+  return pxPerFrame * 60;
+}
+
+function scheduleNextSpawn(spawnNow = false) {
+  if (spawnNow) placePipes();
+
+  const pxPerSec = Math.max(1, currentScrollSpeedAbsPerSec());
+  const desiredSpacingPx =
+    (cfg.pipes.minHorizontalSpacingPx ?? Math.max(canvas.width * 0.48, cfg.pipes.width * 2.2));
+
+  const ms = Math.max(120, Math.round((desiredSpacingPx / pxPerSec) * 1000));
+  spawnTimerId = setTimeout(() => {
+    if (!running || isGameOver) return;
+    scheduleNextSpawn(true);
+  }, ms);
 }
 
 // ================== HUD / TILT ==================
@@ -438,35 +676,41 @@ function drawBirdWithTilt() {
 function drawHUD() {
   ctx.fillStyle = cfg.ui.scoreColor;
   ctx.font = cfg.ui.font;
-  ctx.fillText(score, 5, 45);
+  ctx.fillText(score, 5, 64);
 }
 
 // ================== PIPES / COLISÃO ==================
 function placePipes() {
-  if (gameOver || paused) return;
+  if (!running || isGameOver || paused) return;
 
   const baseGap = cfg.pipes.gapPercent;
   const scoreStep = cfg.difficulty?.gapStepPerScore ?? 0;
   const minGap = cfg.difficulty?.minGapPercent ?? baseGap;
+
   let gapPercent = cfg.difficulty?.rampEnabled ? (baseGap - score * scoreStep) : baseGap;
   if (cfg.difficulty?.timeRampEnabled) gapPercent -= (cfg.difficulty.timeGapStepPerSec || 0) * (activeTimeMs / 1000);
   gapPercent = Math.max(minGap, gapPercent);
   const gap = (canvas.height * gapPercent) / 100;
 
-  const w0 = cfg.pipes.width; let h0 = cfg.pipes.height;
+  const w0 = cfg.pipes.width;
+  let h0 = cfg.pipes.height;
+
+  const usable = Math.max(0, canvas.height - gap);
+  const baseOff = clamp((cfg.pipes.randomBasePercent ?? 0), 0, 100) / 100 * usable;
+  const rangeOff = clamp((cfg.pipes.randomRangePercent ?? 100), 0, 100) / 100 * usable;
+
+  const margin = Math.max(0, cfg.pipes.edgeOverflowPx || 0);
+  let center = (gap / 2) + baseOff + Math.random() * rangeOff;
+  center = clamp(center, (gap / 2) - margin, canvas.height - (gap / 2) + margin);
+
   if (cfg.pipes?.autoStretchToEdges) {
-    const needed = Math.ceil(((canvas.height - gap) / 2) + (cfg.pipes.edgeOverflowPx ?? 0));
-    if (h0 < needed) h0 = needed;
+    const needTop = center - gap / 2 + margin;
+    const needBot = canvas.height - (center + gap / 2) + margin;
+    h0 = Math.max(h0, Math.ceil(needTop), Math.ceil(needBot));
   }
 
-  const base = (cfg.pipes.randomBasePercent / 100) * h0;
-  const range = (cfg.pipes.randomRangePercent / 100) * h0;
-  let topY = -base - Math.random() * range;
-  let botY = topY + h0 + gap;
-
-  const bottomBottom = botY + h0;
-  if (bottomBottom < canvas.height) { const d = canvas.height - bottomBottom; topY += d; botY += d; }
-  if (topY > 0) { const d = topY; topY -= d; botY -= d; }
+  const topY = center - gap / 2 - h0;
+  const botY = center + gap / 2;
 
   pipeArray.push(
     { img: topPipeImg, x: canvas.width, y: topY, width: w0, height: h0, passed: false },
@@ -518,7 +762,7 @@ async function fetchTop10FromSupabase() {
   return data || [];
 }
 
-// ================== OVERLAY: START ==================
+// ================== OVERLAYS ==================
 function ensureStartOverlay() {
   if (document.getElementById('startStyles')) return;
 
@@ -550,16 +794,8 @@ function ensureStartOverlay() {
   `;
   document.body.appendChild(startOverlay);
 
-  document.getElementById('btnStart')?.addEventListener('click', async () => {
-    // cadastro no começo de TODO jogo
-    await withUiLock(ensureCadastro());
-    hideStartOverlay();
-    startNewRun(); // reseta estado
-  });
-
-  document.getElementById('btnScores')?.addEventListener('click', () => {
-    showScoresOverlay();
-  });
+  document.getElementById('btnStart')?.addEventListener('click', () => startGame());
+  document.getElementById('btnScores')?.addEventListener('click', () => showScoresOverlay());
 }
 
 function showStartOverlay() {
@@ -571,7 +807,6 @@ function hideStartOverlay() {
   uiLocked = false;
 }
 
-// ================== OVERLAY: SCORES (Top 10) ==================
 function ensureScoresOverlay() {
   if (document.getElementById('scoresStyles')) return;
 
@@ -643,7 +878,6 @@ function renderTop10ListTo(listEl, rows) {
     : `<div class="muted">Sem scores no servidor ainda.</div>`;
 }
 
-// ================== OVERLAY: GAME OVER ==================
 function ensureGameOverOverlay() {
   if (document.getElementById('goStyles')) return;
 
@@ -685,16 +919,10 @@ function ensureGameOverOverlay() {
   `;
   document.body.appendChild(goOverlay);
 
-  document.getElementById('goReplay')?.addEventListener('click', async () => {
-    await withUiLock(ensureCadastro()); // cadastro no começo de TODO jogo
-    hideGameOverOverlay();
-    startNewRun();
-  });
-
+  document.getElementById('goReplay')?.addEventListener('click', () => startGame());
   document.getElementById('goEditProfile')?.addEventListener('click', async () => {
     await withUiLock(showCadastroModal());
   });
-
   document.getElementById('goBackStart')?.addEventListener('click', () => {
     hideGameOverOverlay();
     showStartOverlay();
@@ -726,6 +954,7 @@ async function handleGameOverSave() {
 }
 
 // ================== HELPERS ==================
+async function withUiLock(promiseLike) { uiLocked = true; try { await promiseLike; } finally { uiLocked = false; } }
 function clamp(n, min, max) { return Math.max(min, Math.min(max, n)); }
 function lerp(a, b, t) { return a + (b - a) * t; }
 function deg2rad(d) { return (d * Math.PI) / 180; }
