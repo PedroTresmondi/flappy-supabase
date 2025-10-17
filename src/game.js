@@ -32,7 +32,16 @@ const DEFAULT_ASSETS = {
   ],
   topPipe: 'assets/img/toppipe.png',
   bottomPipe: 'assets/img/bottompipe.png',
-  bg: '' // ex: 'assets/img/bg-2160x1920.jpg'
+  bg: 'assets/img/bg_2160x1920.png'
+};
+
+// UI do overlay inicial
+const UI_ASSETS = {
+  title: joinBase('assets/img/logo_title.png'),     // opcional
+  heroBird: joinBase('assets/img/bird_hero.png'),   // pássaro “hero” no start
+  hand: joinBase('assets/img/handClick.png'),
+  play: joinBase('assets/img/play.png'),
+  ranking: joinBase('assets/img/ranking.png'),
 };
 
 // ================== CONFIG ==================
@@ -52,22 +61,15 @@ async function fetchRemoteConfigFromSupabase(slug = CONFIG_SLUG) {
   }
 }
 
-// config padrão (pensado para BASE_W×BASE_H)
 const DEFAULT_CONFIG = {
   board: { width: BASE_W, height: BASE_H, background: '#70c5ce' },
   assets: { ...DEFAULT_ASSETS, sfx: { flap: '', score: '', hit: '' } },
-  // Parallax do BG: por padrão 0.5 da velocidade dos canos; se quiser fixa, use fixedPxPerSec > 0
-  bg: {
-    parallaxFactor: 0.5,
-    fixedPxPerSec: 0
-  },
+  bg: { parallaxFactor: 0.5, fixedPxPerSec: 0 },
   bird: {
     width: 34, height: 24,
     startXPercent: 12.5, startYPercent: 50,
     flapForce: 6, maxFallSpeed: 12, hitboxPadding: 2,
-    // Autosize (opcional): % da altura do canvas. Se respectSizePercent = true, sempre usa.
-    sizePercentOfHeight: 0,
-    respectSizePercent: false,
+    sizePercentOfHeight: 0, respectSizePercent: false,
     tilt: {
       enabled: true, upDeg: -25, downDeg: 70, responsiveness: 0.15,
       velForMaxUp: 6, velForMaxDown: 12, snapOnFlap: true, minDeg: -45, maxDeg: 90
@@ -79,7 +81,6 @@ const DEFAULT_CONFIG = {
     width: 64, height: 512, scrollSpeed: 2, gapPercent: 25,
     randomBasePercent: 25, randomRangePercent: 50,
     autoStretchToEdges: false, edgeOverflowPx: 0,
-    // minHorizontalSpacingPx: 520 // opcional; senão calculo é automático
   },
   difficulty: {
     rampEnabled: false, speedPerScore: 0.05, minGapPercent: 18, gapStepPerScore: 0.2,
@@ -92,11 +93,7 @@ const DEFAULT_CONFIG = {
     font: '45px sans-serif', scoreColor: '#ffffff',
     gameOverText: 'GAME OVER', gameOverFont: '45px sans-serif', gameOverColor: '#ffffff'
   },
-  controls: {
-    jump: ['Space', 'ArrowUp', 'KeyX'],
-    minFlapIntervalMs: 120,
-    allowHoldToFlap: false
-  },
+  controls: { jump: ['Space', 'ArrowUp', 'KeyX'], minFlapIntervalMs: 120, allowHoldToFlap: false },
   gameplay: { restartOnJump: false, gracePeriodMs: 100, pauseKey: 'KeyP' }
 };
 
@@ -115,18 +112,20 @@ let activeTimeMs = 0, timeRampStartTs = 0, lastFlapTs = -1;
 let uiLocked = false;
 
 let runId = null, runStartISO = null, runStartPerf = 0;
-let startOverlay = null, scoresOverlay = null, goOverlay = null;
+let startOverlay = null, scoresOverlay = null, rankOverlay = null;
 
-// loop
-let rafId = 0;
-let running = false;
+// loops
+let rafId = 0, running = false;
 
 // BG scroll
-let bgScrollX = 0; // em pixels no canvas (após escala)
+let bgScrollX = 0;
+
+// loop leve do BG para telas
+let rafBgId = 0, bgLooping = false, lastBgOnlyTs = 0;
 
 // ================== BOOT ==================
 export async function boot() {
-  cfg = await loadConfigSanitized();            // merge + sanitize (Supabase prioridade)
+  cfg = await loadConfigSanitized();
   cfg = forceBoardToTarget(cfg, TARGET_W, TARGET_H);
   cfg = applyUniformScale(cfg, BASE_W, BASE_H);
 
@@ -136,9 +135,10 @@ export async function boot() {
 
   ensureStartOverlay();
   ensureScoresOverlay();
-  ensureGameOverOverlay();
+  ensureRankOverlay(); // novo modal de Game Over / Ranking
 
-  showStartOverlay(); // espera o clique "Começar", que chama startGame()
+  showStartOverlay();
+  startBgLoop();
 }
 
 // ================== CICLO DE VIDA ==================
@@ -163,23 +163,24 @@ function resetRunState() {
 }
 
 export async function startGame() {
-  // cadastro antes de toda partida
-  await withUiLock(ensureCadastro());
-
+  // entra no cadastro antes da partida (sem sobreposição dos botões)
   hideStartOverlay();
   hideScoresOverlay();
-  hideGameOverOverlay();
+  hideRankOverlay();
 
+  await withUiLock(ensureCadastro());
+
+  stopBgLoop();
   resetRunState();
-  stopSpawning();      // sanidade
-  stopGameLoop();      // sanidade
+  stopSpawning();
+  stopGameLoop();
 
   running = true;
-  scheduleNextSpawn(true);
+  // Spawner começa no primeiro flap
   rafId = requestAnimationFrame(tick);
 }
 
-export function gameOver(reason = '') {
+export function gameOver() {
   if (isGameOver) return;
   isGameOver = true;
 
@@ -187,7 +188,7 @@ export function gameOver(reason = '') {
   stopSpawning();
   stopGameLoop();
 
-  // salva e mostra overlay
+  startBgLoop();
   handleGameOverSave().catch(() => { });
 }
 
@@ -196,7 +197,6 @@ function stopGameLoop() {
   if (rafId) cancelAnimationFrame(rafId);
   rafId = 0;
 }
-
 function stopSpawning() {
   if (spawnTimerId) clearTimeout(spawnTimerId);
   spawnTimerId = null;
@@ -206,13 +206,11 @@ function stopSpawning() {
 async function loadConfigSanitized() {
   let merged = structuredClone(DEFAULT_CONFIG);
 
-  // 1) arquivo opcional
   try {
     const res = await fetch(joinBase('/flappy-config.json'), { cache: 'no-store' });
     if (res.ok) merged = deepMerge(merged, await res.json() || {});
   } catch { }
 
-  // 2) LocalStorage (fallback)
   try {
     const raw = localStorage.getItem(KEY);
     if (raw) {
@@ -221,7 +219,6 @@ async function loadConfigSanitized() {
     }
   } catch { }
 
-  // 3) Supabase (prioridade)
   try {
     const remote = await fetchRemoteConfigFromSupabase();
     if (remote) merged = deepMerge(merged, remote);
@@ -230,7 +227,6 @@ async function loadConfigSanitized() {
   }
 
   merged.assets = sanitizeAssets(merged.assets);
-  console.log('[CFG]', { bird: merged.bird, board: merged.board, bg: merged.assets.bg, bgCfg: merged.bg });
   return merged;
 }
 
@@ -241,11 +237,10 @@ function sanitizeAssets(a) {
   out.birdFrames = cleaned.length ? unique(cleaned) : DEFAULT_ASSETS.birdFrames;
   out.topPipe = normalizeAssetPath(a?.topPipe) || DEFAULT_ASSETS.topPipe;
   out.bottomPipe = normalizeAssetPath(a?.bottomPipe) || DEFAULT_ASSETS.bottomPipe;
-  out.bg = normalizeAssetPath(a?.bg) || '';
+  out.bg = normalizeAssetPath(a?.bg) || DEFAULT_ASSETS.bg || '';
   out.sfx = a?.sfx || { flap: '', score: '', hit: '' };
   return out;
 }
-
 function normalizeAssetPath(p) {
   if (!p) return '';
   const s = String(p).trim();
@@ -256,7 +251,6 @@ function normalizeAssetPath(p) {
   if (s.startsWith('/')) return joinBase(s);
   return '';
 }
-
 function deepMerge(a, b) {
   const out = Array.isArray(a) ? [...a] : { ...a };
   Object.keys(b || {}).forEach(k => {
@@ -275,14 +269,12 @@ function forceBoardToTarget(cfgIn, w, h) {
   cfg.board.height = h;
   return cfg;
 }
-
 function applyUniformScale(cfgIn, baseW, baseH) {
   const cfg = structuredClone(cfgIn);
   const worldW = Number(cfg.board?.width || baseW);
   const worldH = Number(cfg.board?.height || baseH);
   const sx = worldW / baseW, sy = worldH / baseH;
   const S = Math.min(sx, sy);
-
   if (!(S > 0) || Math.abs(S - 1) < 1e-6) return cfg;
 
   const mulI = (v) => Math.round(Number(v || 0) * S);
@@ -306,11 +298,9 @@ function applyUniformScale(cfgIn, baseW, baseH) {
 
   cfg.ui.font = scaleFontSpec(cfg.ui.font, S);
   cfg.ui.gameOverFont = scaleFontSpec(cfg.ui.gameOverFont, S);
-
   cfg._scale = S;
   return cfg;
 }
-
 function scaleFontSpec(spec, S) {
   if (typeof spec !== 'string' || !S || !isFinite(S)) return spec;
   return spec.replace(/(\d+(\.\d+)?)px/ig, (_, n) => `${Math.round(parseFloat(n) * S)}px`);
@@ -337,6 +327,7 @@ function setupCanvas() {
   canvas.style.height = Math.round(canvas.height * scale) + 'px';
 
   ctx = canvas.getContext('2d', { alpha: false });
+  ctx.imageSmoothingEnabled = false;
 }
 
 function loadAssets() {
@@ -351,7 +342,6 @@ function loadAssets() {
       }
     };
 
-    // Bird frames
     birdImgs = [];
     frames.forEach(src => {
       const im = new Image();
@@ -362,7 +352,6 @@ function loadAssets() {
       birdImgs.push(im);
     });
 
-    // Pipes
     topPipeImg = new Image();
     topPipeImg.crossOrigin = "anonymous";
     topPipeImg.onload = done;
@@ -375,7 +364,6 @@ function loadAssets() {
     bottomPipeImg.onerror = () => { console.warn('[assets] bottomPipe falhou:', cfg.assets.bottomPipe); bottomPipeImg = null; done(); };
     bottomPipeImg.src = cfg.assets.bottomPipe;
 
-    // Background (2160×1920) — opcional
     bgImg = null;
     const bgUrl = cfg.assets.bg;
     if (bgUrl) {
@@ -386,11 +374,9 @@ function loadAssets() {
       im.src = bgUrl;
       bgImg = im;
     } else {
-      // Se não tiver BG, “consome” um slot do contador
       done();
     }
 
-    // SFX
     ['flap', 'score', 'hit'].forEach(k => {
       const url = cfg.assets?.sfx?.[k];
       if (url) { const a = new Audio(url); a.preload = 'auto'; SFX[k] = a; }
@@ -398,7 +384,6 @@ function loadAssets() {
   });
 }
 
-// Redimensiona o pássaro usando % da altura do canvas (se configurado).
 function applyDynamicBirdAutosize() {
   const percent = Number(cfg.bird?.sizePercentOfHeight || 0);
   const usePercent = !!cfg.bird?.respectSizePercent && percent > 0;
@@ -406,10 +391,9 @@ function applyDynamicBirdAutosize() {
   const MIN_AUTO_PERCENT = 6;
   let finalPercent = 0;
 
-  if (usePercent) {
-    finalPercent = percent;
-  } else {
-    const tooSmall = (cfg.bird.height || 0) < canvas.height * 0.04; // <4% da altura
+  if (usePercent) finalPercent = percent;
+  else {
+    const tooSmall = (cfg.bird.height || 0) < canvas.height * 0.04;
     if (tooSmall) finalPercent = Math.max(MIN_AUTO_PERCENT, percent || 0);
   }
 
@@ -426,8 +410,6 @@ function applyDynamicBirdAutosize() {
   cfg.bird.height = targetH;
 
   if (bird) { bird.width = targetW; bird.height = targetH; }
-
-  console.log('[auto-bird]', { finalPercent, targetW, targetH });
 }
 
 // ================== CONTROLES ==================
@@ -446,13 +428,7 @@ function setupControls() {
   allowedJumpKeys = new Set(cfg.controls.jump);
 
   document.addEventListener('keydown', (e) => {
-    // F9: limpa config antiga e recarrega
-    if (e.code === 'F9') {
-      try { localStorage.removeItem(KEY); } catch { }
-      location.reload();
-      return;
-    }
-
+    if (e.code === 'F9') { try { localStorage.removeItem(KEY); } catch { } location.reload(); return; }
     if (isTypingTarget(e)) return;
     if (uiLocked) return;
 
@@ -484,16 +460,15 @@ function onJumpKey(e) {
   if (lastFlapTs >= 0 && now - lastFlapTs < minInt) return;
   lastFlapTs = now;
 
-  if (isGameOver) {
-    if (cfg.gameplay.restartOnJump) startGame();
-    return;
-  }
+  if (isGameOver) return;
 
   if (!gameStarted) {
     gameStarted = true;
     graceUntilTs = performance.now() + Math.max(0, cfg.gameplay.gracePeriodMs || 0);
     const delay = Math.max(0, cfg.difficulty?.timeStartDelayMs ?? 0);
     timeRampStartTs = graceUntilTs + delay;
+
+    if (!spawnTimerId) scheduleNextSpawn(true);
   }
 
   velocityY = -Math.abs(cfg.bird.flapForce);
@@ -523,7 +498,6 @@ function tick(ts) {
   const dt = Math.min(50, nowTs - lastTs);
   lastTs = nowTs;
 
-  // Fundo (BG) antes de tudo (ou cor sólida se não houver BG)
   drawBackground(dt);
 
   const t = dt / 16.667;
@@ -548,7 +522,7 @@ function tick(ts) {
   updateBirdTilt(t);
   drawBirdWithTilt();
 
-  if (bird.y > canvas.height) { gameOver('fell'); return; }
+  if (bird.y > canvas.height) { gameOver(); return; }
 
   const scroll = currentScrollSpeed();
   for (let i = 0; i < pipeArray.length; i++) {
@@ -557,50 +531,62 @@ function tick(ts) {
     tryDrawImage(p.img, p.x, p.y, p.width, p.height);
 
     if (!p.passed && bird.x > p.x + p.width) { score += cfg.scoring.pointsPerPipe; p.passed = true; try { SFX.score?.play(); } catch { } }
-    if (collides(bird, p)) { gameOver('hit'); return; }
+    if (collides(bird, p)) { gameOver(); return; }
   }
   while (pipeArray.length > 0 && pipeArray[0].x < -cfg.pipes.width) pipeArray.shift();
 }
 
 // ================== BACKGROUND SCROLL ==================
+function startBgLoop() {
+  if (bgLooping) return;
+  bgLooping = true;
+  lastBgOnlyTs = 0;
+  rafBgId = requestAnimationFrame(bgTick);
+}
+function stopBgLoop() {
+  bgLooping = false;
+  if (rafBgId) cancelAnimationFrame(rafBgId);
+  rafBgId = 0;
+}
+function bgTick(ts) {
+  if (!bgLooping) return;
+  rafBgId = requestAnimationFrame(bgTick);
+
+  if (!lastBgOnlyTs) lastBgOnlyTs = ts || performance.now();
+  const now = ts || performance.now();
+  const dt = Math.min(50, now - lastBgOnlyTs);
+  lastBgOnlyTs = now;
+
+  drawBackground(dt);
+}
+
 function drawBackground(dtMs) {
   if (!okImg(bgImg)) {
-    // Fallback: preenche com a cor do board
     ctx.fillStyle = cfg.board.background || '#000';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     return;
   }
 
-  // Calcula velocidade do BG
-  const pxPerSecPipes = currentScrollSpeedAbsPerSec(); // velocidade absoluta dos canos
+  const pxPerSecPipes = currentScrollSpeedAbsPerSec();
   const fixed = Number(cfg.bg?.fixedPxPerSec || 0);
   const factor = Number(cfg.bg?.parallaxFactor ?? 0.5);
   const bgPxPerSec = fixed > 0 ? fixed : (pxPerSecPipes * factor);
 
-  // Atualiza offset (move da direita para a esquerda → incrementa scroll e desenha para a esquerda)
   const delta = Math.max(0, dtMs) / 1000;
   bgScrollX = (bgScrollX + bgPxPerSec * delta) || 0;
 
-  // Desenha “telhas” do BG: imagem 2160×1920 → escala para altura do canvas
   const imgW = bgImg.naturalWidth, imgH = bgImg.naturalHeight;
   const scale = canvas.height / imgH;
   const drawW = Math.ceil(imgW * scale);
   const drawH = canvas.height;
 
-  // Posição inicial (negativa) e wrap
   let x = -Math.floor(bgScrollX % drawW);
-
-  // Desenha 2 cópias para cobrir o canvas
   ctx.drawImage(bgImg, 0, 0, imgW, imgH, x, 0, drawW, drawH);
   ctx.drawImage(bgImg, 0, 0, imgW, imgH, x + drawW, 0, drawW, drawH);
 }
 
 // ================== SPAWNER ==================
-function startSpawning() {
-  stopSpawning();
-  scheduleNextSpawn(true);
-}
-
+function startSpawning() { stopSpawning(); scheduleNextSpawn(true); }
 function currentScrollSpeedAbsPerSec() {
   const base = Math.abs(cfg.pipes.scrollSpeed);
   const scoreExtra = cfg.difficulty?.rampEnabled ? (cfg.difficulty.speedPerScore || 0) * score : 0;
@@ -611,7 +597,6 @@ function currentScrollSpeedAbsPerSec() {
   const pxPerFrame = base + scoreExtra + timeExtra;
   return pxPerFrame * 60;
 }
-
 function scheduleNextSpawn(spawnNow = false) {
   if (spawnNow) placePipes();
 
@@ -636,7 +621,6 @@ function currentScrollSpeed() {
     : 0;
   return -(base + scoreExtra + timeExtra);
 }
-
 function updateBirdTilt(tFactor) {
   const tcfg = cfg.bird.tilt;
   if (!tcfg?.enabled) { birdTiltDeg = 0; return; }
@@ -646,7 +630,6 @@ function updateBirdTilt(tFactor) {
   const alpha = 1 - Math.pow(1 - clamp(tcfg.responsiveness ?? 0.15, 0, 1), tFactor);
   birdTiltDeg = clamp(lerp(birdTiltDeg, targetDeg, alpha), tcfg.minDeg ?? -360, tcfg.maxDeg ?? 360);
 }
-
 function drawBirdWithTilt() {
   if (!bird) return;
 
@@ -666,22 +649,19 @@ function drawBirdWithTilt() {
   ctx.save();
   ctx.translate(cx, cy);
   ctx.rotate(deg2rad(birdTiltDeg));
-
   if (img) ctx.drawImage(img, -bird.width / 2, -bird.height / 2, bird.width, bird.height);
   else { ctx.fillStyle = '#fbbf24'; ctx.fillRect(-bird.width / 2, -bird.height / 2, bird.width, bird.height); }
-
   ctx.restore();
 }
-
 function drawHUD() {
   ctx.fillStyle = cfg.ui.scoreColor;
   ctx.font = cfg.ui.font;
-  ctx.fillText(score, 5, 64);
+  ctx.fillText(score, 5 | 0, 64 | 0);
 }
 
 // ================== PIPES / COLISÃO ==================
 function placePipes() {
-  if (!running || isGameOver || paused) return;
+  if (!running || isGameOver || paused || !gameStarted) return;
 
   const baseGap = cfg.pipes.gapPercent;
   const scoreStep = cfg.difficulty?.gapStepPerScore ?? 0;
@@ -717,7 +697,6 @@ function placePipes() {
     { img: bottomPipeImg, x: canvas.width, y: botY, width: w0, height: h0, passed: false },
   );
 }
-
 function collides(a, b) {
   const pad = Math.max(0, cfg.bird.hitboxPadding || 0);
   const ax = a.x + pad, ay = a.y + pad;
@@ -725,7 +704,7 @@ function collides(a, b) {
   return ax < b.x + b.width && ax + aw > b.x && ay < b.y + b.height && ay + ah > b.y;
 }
 
-// ================== SUPABASE ==================
+// ================== SUPABASE / RANK ==================
 async function salvarScoreNoSupabase(pontos) {
   if (!supabase) return;
 
@@ -733,8 +712,8 @@ async function salvarScoreNoSupabase(pontos) {
   const payload = {
     run_id: String(runId),
     player_name: player.nome || 'Anônimo',
-    email: player.email || 'anon@demo.com',
-    telefone: player.telefone || '',
+    email: 'anon@demo.com',
+    telefone: '',
     score: Number(pontos),
     win: false,
     played_at: new Date().toISOString(),
@@ -751,6 +730,17 @@ async function salvarScoreNoSupabase(pontos) {
   if (error) throw error;
 }
 
+async function fetchRankForScore(finalScore) {
+  if (!supabase) return null;
+  // posição = (# de scores estritamente maiores) + 1
+  const { count, error } = await supabase
+    .from(SUPABASE_SCORES_TABLE)
+    .select('*', { count: 'exact', head: true })
+    .gt('score', Number(finalScore));
+  if (error) { console.warn('[Supabase] rank erro:', error); return null; }
+  return (typeof count === 'number') ? (count + 1) : null;
+}
+
 async function fetchTop10FromSupabase() {
   if (!supabase) return [];
   const { data, error } = await supabase
@@ -762,51 +752,69 @@ async function fetchTop10FromSupabase() {
   return data || [];
 }
 
-// ================== OVERLAYS ==================
+// ================== OVERLAY INICIAL ==================
 function ensureStartOverlay() {
   if (document.getElementById('startStyles')) return;
 
   const st = document.createElement('style');
   st.id = 'startStyles';
   st.textContent = `
-    #startOverlay{position:fixed;inset:0;display:none;place-items:center;z-index:999}
-    #startOverlay.show{display:grid}
-    #startOverlay .backdrop{position:absolute;inset:0;background:rgba(0,0,0,.55);backdrop-filter: blur(2px)}
-    #startOverlay .card{position:relative;background:#0f172a;border:1px solid #1f2937;border-radius:16px;padding:16px;min-width:320px;max-width:92vw;color:#e5e7eb;box-shadow:0 10px 30px #0009}
-    #startOverlay .title{font:600 22px/1.2 system-ui;margin:0 0 12px}
-    #startOverlay .row{display:flex;gap:10px;flex-wrap:wrap;margin-top:10px}
-    #startOverlay .btn{appearance:none;border:1px solid #334155;background:#111827;color:#e5e7eb;padding:10px 14px;border-radius:10px;cursor:pointer;font-size:14px}
-    #startOverlay .btn:hover{background:#1f2937}
+    #startOverlay{position:fixed;inset:0;display:none;z-index:999;pointer-events:none}
+    #startOverlay.show{display:block}
+    #startOverlay .wrap{position:absolute;inset:0}
+    #startOverlay img{image-rendering:pixelated;image-rendering:crisp-edges;user-select:none;-webkit-user-drag:none}
+    #startOverlay .logo{
+      position:absolute;left:0;right:0;top:min(9vh,140px);
+      width:min(64vw,680px);margin:0 auto;display:block;pointer-events:none;
+      filter: drop-shadow(0 2px 0 rgba(0,0,0,.15));
+    }
+    #startOverlay .hero{
+      position:absolute;left:50%;top:44%;
+      width:min(48vw,520px);transform:translate(-50%,-50%);
+      animation:hero-bob 1.8s ease-in-out infinite;
+      pointer-events:none;filter: drop-shadow(0 4px 0 rgba(0,0,0,.15));
+    }
+    #startOverlay .hand{
+      position:absolute;left:64%;top:57%;
+      width:min(14vw,150px);transform-origin:10% 10%;
+      animation:hand-tap 1.15s ease-in-out infinite;pointer-events:none;
+      filter: drop-shadow(0 2px 0 rgba(0,0,0,.15));
+    }
+    #startOverlay .buttons{
+      position:absolute;left:0;right:0;bottom:7vh;
+      display:flex;justify-content:center;gap:28px;
+    }
+    #startOverlay .btn{pointer-events:auto;display:inline-block;transition:transform .08s ease}
+    #startOverlay .btn img{display:block;height:min(96px,11vh)}
+    #startOverlay .btn:hover{transform:translateY(-2px)}
+    #startOverlay .btn:active{transform:translateY(2px)}
+    @keyframes hero-bob{0%,100%{transform:translate(-50%,-52%)}50%{transform:translate(-50%,-48%)}}
+    @keyframes hand-tap{0%,100%{transform:translate(0,0) scale(1)}40%{transform:translate(12px,12px) scale(.92)}60%{transform:translate(0,0) scale(1)}}
   `;
   document.head.appendChild(st);
 
   startOverlay = document.createElement('div');
   startOverlay.id = 'startOverlay';
   startOverlay.innerHTML = `
-    <div class="backdrop"></div>
-    <div class="card">
-      <h3 class="title">Flappy + Supabase</h3>
-      <div class="row">
-        <button id="btnStart"  class="btn">Começar</button>
-        <button id="btnScores" class="btn">Scores</button>
+    <div class="wrap">
+      ${UI_ASSETS.title ? `<img class="logo" src="${UI_ASSETS.title}" alt="logo">` : ''}
+      ${UI_ASSETS.heroBird ? `<img class="hero" src="${UI_ASSETS.heroBird}" alt="bird">` : ''}
+      ${UI_ASSETS.hand ? `<img class="hand" src="${UI_ASSETS.hand}" alt="tap">` : ''}
+      <div class="buttons">
+        <a id="btnStart"  class="btn" aria-label="Jogar"><img src="${UI_ASSETS.play}" alt="Play"></a>
+        <a id="btnScores" class="btn" aria-label="Ranking"><img src="${UI_ASSETS.ranking}" alt="Ranking"></a>
       </div>
     </div>
   `;
   document.body.appendChild(startOverlay);
 
-  document.getElementById('btnStart')?.addEventListener('click', () => startGame());
-  document.getElementById('btnScores')?.addEventListener('click', () => showScoresOverlay());
+  document.getElementById('btnStart')?.addEventListener('click', (e) => { e.preventDefault(); startGame(); });
+  document.getElementById('btnScores')?.addEventListener('click', (e) => { e.preventDefault(); showScoresOverlay(); });
 }
+function showStartOverlay() { startOverlay?.classList.add('show'); uiLocked = true; startBgLoop(); }
+function hideStartOverlay() { startOverlay?.classList.remove('show'); uiLocked = false; }
 
-function showStartOverlay() {
-  startOverlay?.classList.add('show');
-  uiLocked = true;
-}
-function hideStartOverlay() {
-  startOverlay?.classList.remove('show');
-  uiLocked = false;
-}
-
+// ================== OVERLAY TOP 10 ==================
 function ensureScoresOverlay() {
   if (document.getElementById('scoresStyles')) return;
 
@@ -834,9 +842,7 @@ function ensureScoresOverlay() {
     <div class="card">
       <h3 class="title">Top 10</h3>
       <div id="scoresList" class="list"></div>
-      <div class="row">
-        <button id="btnScoresBack" class="btn">Voltar</button>
-      </div>
+      <div class="row"><button id="btnScoresBack" class="btn">Voltar</button></div>
     </div>
   `;
   document.body.appendChild(scoresOverlay);
@@ -846,10 +852,10 @@ function ensureScoresOverlay() {
     showStartOverlay();
   });
 }
-
 async function showScoresOverlay() {
   scoresOverlay?.classList.add('show');
   uiLocked = true;
+  startBgLoop();
 
   const list = document.getElementById('scoresList');
   if (list) list.innerHTML = `<div class="muted">Carregando…</div>`;
@@ -857,11 +863,7 @@ async function showScoresOverlay() {
   const rows = await fetchTop10FromSupabase();
   renderTop10ListTo(list, rows);
 }
-function hideScoresOverlay() {
-  scoresOverlay?.classList.remove('show');
-  uiLocked = false;
-}
-
+function hideScoresOverlay() { scoresOverlay?.classList.remove('show'); uiLocked = false; }
 function renderTop10ListTo(listEl, rows) {
   if (!listEl) return;
   listEl.innerHTML = rows?.length
@@ -878,79 +880,129 @@ function renderTop10ListTo(listEl, rows) {
     : `<div class="muted">Sem scores no servidor ainda.</div>`;
 }
 
-function ensureGameOverOverlay() {
-  if (document.getElementById('goStyles')) return;
+// ================== OVERLAY RANK (GAME OVER) ==================
+function ensureRankOverlay() {
+  if (document.getElementById('rankStyles')) return;
 
   const st = document.createElement('style');
-  st.id = 'goStyles';
+  st.id = 'rankStyles';
   st.textContent = `
-    #goOverlay{position:fixed;inset:0;display:none;place-items:center;z-index:1100}
-    #goOverlay.show{display:grid}
-    #goOverlay .backdrop{position:absolute;inset:0;background:rgba(0,0,0,.55);backdrop-filter: blur(2px)}
-    #goOverlay .card{position:relative;background:#0f172a;border:1px solid #1f2937;border-radius:16px;padding:16px;min-width:320px;max-width:92vw;color:#e5e7eb;box-shadow:0 10px 30px #0009}
-    #goOverlay .title{font:600 20px/1.2 system-ui;margin:0 0 8px}
-    #goOverlay .score{font:700 36px/1.2 system-ui;margin:0 10px 10px 0;color:#86efac;display:inline-block}
-    #goOverlay .row{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
-    #goOverlay .btn{appearance:none;border:1px solid #334155;background:#111827;color:#e5e7eb;padding:10px 14px;border-radius:10px;cursor:pointer;font-size:14px}
-    #goOverlay .btn:hover{background:#1f2937}
-    #goOverlay .list{max-height:260px;overflow:auto;margin-top:6px;border-top:1px solid #1f2937;padding-top:6px}
-    #goOverlay .item{display:grid;grid-template-columns:36px 1fr auto;align-items:center;gap:8px;padding:6px 4px;border-bottom:1px dashed #1f2937}
-    #goOverlay .muted{color:#94a3b8;font-size:12px}
-    #goOverlay .rank{opacity:.85}
-    #goOverlay .pts{font-weight:700}
+    #rankOverlay{position:fixed;inset:0;display:none;z-index:1100;cursor:pointer}
+    #rankOverlay.show{display:block}
+    #rankOverlay .wrap{position:absolute;inset:0;display:grid;place-items:start center;pointer-events:auto}
+    #rankOverlay .title{
+      margin-top:4vh;color:#ffffff; font-weight:900; letter-spacing:1px;
+      font-size:clamp(26px,5.5vh,44px);
+      text-shadow:
+        -2px -2px 0 #0b0b0b, 2px -2px 0 #0b0b0b,
+        -2px  2px 0 #0b0b0b, 2px  2px 0 #0b0b0b,
+        0 2px 0 #0b0b0b;
+      user-select:none;
+    }
+    #rankOverlay .panel{
+      margin-top:3vh;background:#fff7ea;border-radius:24px;padding:28px 34px;
+      box-shadow:
+        0 0 0 6px #221b22 inset,
+        0 0 0 12px #c9b8a6 inset,
+        0 10px 0 0 #221b22,
+        0 18px 0 0 #8a6f5a;
+      display:flex;align-items:center;gap:min(4vw,24px);
+      image-rendering:pixelated;
+    }
+    #rankOverlay .panel .bird{ width:min(18vw,120px); filter:drop-shadow(0 2px 0 #0003) }
+    #rankOverlay .score{
+      font-weight:900; color:#ffffff; background:#111;
+      padding:2px 12px; border-radius:10px; display:inline-block;
+      font-size:clamp(64px,10vh,120px); line-height:1;
+      text-shadow:
+        -6px -6px 0 #000, 6px -6px 0 #000,
+        -6px  6px 0 #000, 6px  6px 0 #000,
+        0 4px 0 #000;
+    }
+    #rankOverlay .ranking{
+      margin-top:8px; font-size:clamp(18px,3.5vh,26px); color:#222;
+      text-shadow:
+        -2px -2px 0 #fff, 2px -2px 0 #fff,
+        -2px  2px 0 #fff, 2px  2px 0 #fff;
+      font-weight:800; letter-spacing:1px;
+    }
+    #rankOverlay .finalizar{
+      margin-top:5vh; color:#ffffff; font-size:clamp(18px,3.5vh,28px); font-weight:700;
+      text-shadow:-2px -2px 0 #000,2px -2px 0 #000,-2px 2px 0 #000,2px 2px 0 #000;
+      user-select:none;
+    }
+    #rankOverlay .hand{
+      position:absolute; bottom:6vh; width:min(20vw,120px); image-rendering:pixelated;
+      animation:hand-tap 1.15s ease-in-out infinite; transform-origin:10% 10%;
+      filter:drop-shadow(0 2px 0 #0003);
+    }
+    @keyframes hand-tap{0%,100%{transform:translate(0,0) scale(1)}40%{transform:translate(12px,12px) scale(.92)}60%{transform:translate(0,0) scale(1)}}
   `;
   document.head.appendChild(st);
 
-  goOverlay = document.createElement('div');
-  goOverlay.id = 'goOverlay';
-  goOverlay.innerHTML = `
-    <div class="backdrop"></div>
-    <div class="card" role="dialog" aria-modal="true" aria-labelledby="goTitle">
-      <h3 id="goTitle" class="title">Game Over</h3>
-      <div><span id="goScore" class="score">0</span></div>
-      <div class="row">
-        <button id="goReplay" class="btn">Jogar de novo</button>
-        <button id="goEditProfile" class="btn">Editar cadastro</button>
-        <button id="goBackStart" class="btn">Voltar ao início</button>
+  rankOverlay = document.createElement('div');
+  rankOverlay.id = 'rankOverlay';
+  rankOverlay.innerHTML = `
+    <div class="wrap" id="rankWrap">
+      <div class="title">Game Over</div>
+      <div class="panel">
+        ${UI_ASSETS.heroBird ? `<img class="bird" src="${UI_ASSETS.heroBird}" alt="bird">` : ''}
+        <div>
+          <div id="rankScore" class="score">0</div>
+          <div id="rankPos" class="ranking">Ranking --</div>
+        </div>
       </div>
-      <div class="muted">Top 10 (Supabase):</div>
-      <div id="goList" class="list"></div>
+      <div class="finalizar">Finalizar</div>
+      ${UI_ASSETS.hand ? `<img class="hand" src="${UI_ASSETS.hand}" alt="tap">` : ''}
     </div>
   `;
-  document.body.appendChild(goOverlay);
+  document.body.appendChild(rankOverlay);
 
-  document.getElementById('goReplay')?.addEventListener('click', () => startGame());
-  document.getElementById('goEditProfile')?.addEventListener('click', async () => {
-    await withUiLock(showCadastroModal());
-  });
-  document.getElementById('goBackStart')?.addEventListener('click', () => {
-    hideGameOverOverlay();
-    showStartOverlay();
-  });
+  // clique em qualquer lugar finaliza
+  rankOverlay.addEventListener('click', finalizeAndReset);
 }
-
-async function showGameOverOverlay(finalScore) {
-  goOverlay?.classList.add('show');
+function showRankOverlay(finalScore, rankPos) {
+  const sc = document.getElementById('rankScore');
+  const rp = document.getElementById('rankPos');
+  if (sc) sc.textContent = String(finalScore | 0);
+  if (rp) rp.textContent = `Ranking ${rankPos != null ? String(rankPos).padStart(2, '0') : '--'}`;
+  rankOverlay?.classList.add('show');
   uiLocked = true;
-
-  const scoreEl = document.getElementById('goScore');
-  if (scoreEl) scoreEl.textContent = String(finalScore);
-
-  const rows = await fetchTop10FromSupabase();
-  const list = document.getElementById('goList');
-  renderTop10ListTo(list, rows);
 }
+function hideRankOverlay() { rankOverlay?.classList.remove('show'); uiLocked = false; }
 
-function hideGameOverOverlay() {
-  goOverlay?.classList.remove('show');
-  uiLocked = false;
-}
-
-// ================== PERSISTÊNCIA FIM DE JOGO ==================
+// ================== GAME OVER FLOW ==================
 async function handleGameOverSave() {
   try { await salvarScoreNoSupabase(score); }
   catch (e) { console.warn('[Supabase] falha ao salvar:', e); }
-  finally { await showGameOverOverlay(score); }
+
+  let pos = null;
+  try { pos = await fetchRankForScore(score); } catch { }
+  showRankOverlay(score, pos);
+}
+
+// ================== RESET/FINALIZAR ==================
+function finalizeAndReset() {
+  // limpa tudo
+  try { localStorage.clear(); } catch { }
+  try { sessionStorage.clear(); } catch { }
+  try {
+    if ('caches' in window) {
+      caches.keys().then(keys => keys.forEach(k => caches.delete(k))).catch(() => { });
+    }
+  } catch { }
+
+  // reseta estado de jogo
+  stopGameLoop();
+  stopSpawning();
+  running = false;
+  pipeArray = [];
+  isGameOver = false;
+  gameStarted = false;
+
+  hideRankOverlay();
+  showStartOverlay();
+  startBgLoop();
 }
 
 // ================== HELPERS ==================

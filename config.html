@@ -1,473 +1,251 @@
 <!DOCTYPE html>
 <html lang="pt-BR">
-
 <head>
-    <meta charset="UTF-8" />
-    <title>Flappy — Configuração</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <style>
-        :root {
-            --bg: #0b1220;
-            --panel: #0f172a;
-            --ink: #e5e7eb;
-            --muted: #94a3b8;
-            --line: #1f2937;
-            --acc: #22c55e;
-            --btn: #111827;
-            --btnb: #334155;
-            --btnh: #1f2937;
-        }
-
-        * {
-            box-sizing: border-box
-        }
-
-        html,
-        body {
-            margin: 0;
-            padding: 0;
-            height: 100%;
-            background: var(--bg);
-            color: var(--ink);
-            font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif
-        }
-
-        header {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 12px;
-            padding: 12px 16px;
-            border-bottom: 1px solid var(--line)
-        }
-
-        .title {
-            font-weight: 600;
-            letter-spacing: .2px
-        }
-
-        .actions {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 8px
-        }
-
-        .btn,
-        .link,
-        label.import {
-            appearance: none;
-            border: 1px solid var(--btnb);
-            background: var(--btn);
-            color: var(--ink);
-            padding: 8px 12px;
-            border-radius: 10px;
-            cursor: pointer;
-            font-size: 14px
-        }
-
-        .btn:hover,
-        .link:hover,
-        label.import:hover {
-            background: var(--btnh)
-        }
-
-        .link {
-            color: var(--acc);
-            text-decoration: none;
-            display: inline-flex;
-            align-items: center;
-            gap: 6px
-        }
-
-        label.import input {
-            display: none
-        }
-
-        .wrap {
-            max-width: 1200px;
-            margin: 18px auto 24px;
-            padding: 0 16px;
-            display: grid;
-            grid-template-columns: 1.1fr .9fr;
-            gap: 16px
-        }
-
-        @media (max-width:980px) {
-            .wrap {
-                grid-template-columns: 1fr
-            }
-        }
-
-        .panel {
-            background: var(--panel);
-            border: 1px solid var(--line);
-            border-radius: 14px;
-            padding: 14px
-        }
-
-        h2 {
-            margin: 8px 0 12px;
-            font-size: 16px
-        }
-
-        fieldset.group {
-            border: 1px solid var(--line);
-            border-radius: 12px;
-            padding: 10px;
-            margin: 12px 0
-        }
-
-        fieldset.group legend {
-            padding: 0 6px;
-            font-weight: 600
-        }
-
-        .row {
-            display: grid;
-            grid-template-columns: 220px 1fr;
-            gap: 10px;
-            align-items: center;
-            margin: 6px 0
-        }
-
-        .row input[type="text"],
-        .row input[type="number"] {
-            width: 100%;
-            max-width: 360px
-        }
-
-        .hint {
-            font-size: 12px;
-            color: var(--muted)
-        }
-
-        #jsonPreview {
-            background: #0a0f1d;
-            color: #cbd5e1;
-            border: 1px solid var(--line);
-            border-radius: 12px;
-            padding: 10px;
-            overflow: auto;
-            min-height: 240px;
-            white-space: pre
-        }
-
-        #status {
-            min-height: 20px;
-            margin-top: 8px
-        }
-
-        #status .ok {
-            color: #86efac
-        }
-
-        #status .err {
-            color: #fca5a5
-        }
-
-        .tilt-preview-wrap {
-            display: grid;
-            grid-template-columns: 260px 1fr;
-            gap: 12px;
-            align-items: center;
-            margin-top: 8px
-        }
-
-        canvas#tiltPreview {
-            border: 1px solid var(--line);
-            border-radius: 10px;
-            background: #0b1220
-        }
-    </style>
+<meta charset="UTF-8" />
+<title>Flappy — Configuração</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+    :root{
+      --bg:#0b1220;--panel:#0f172a;--ink:#e5e7eb;--muted:#94a3b8;--line:#1f2937;
+      --acc:#22c55e;--btn:#111827;--btnb:#334155;--btnh:#1f2937
+    }
+    *{box-sizing:border-box}
+    html,body{height:100%;margin:0;background:var(--bg);color:var(--ink);
+      font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
+    header{display:flex;align-items:center;justify-content:space-between;gap:12px;
+      padding:12px 16px;border-bottom:1px solid var(--line)}
+    .title{font-weight:600;letter-spacing:.2px}
+    .actions{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+    .btn,.link,.input{
+      appearance:none;border:1px solid var(--btnb);background:var(--btn);color:var(--ink);
+      padding:8px 12px;border-radius:10px;font-size:14px
+    }
+    .btn:hover,.link:hover{background:var(--btnh)}
+    .link{color:var(--acc);text-decoration:none;display:inline-flex;gap:6px}
+    .wrap{max-width:1200px;margin:18px auto 24px;padding:0 16px;display:grid;grid-template-columns:1.1fr .9fr;gap:16px}
+    @media (max-width:980px){.wrap{grid-template-columns:1fr}}
+    .panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px}
+    h2{margin:8px 0 12px;font-size:16px}
+    fieldset.group{border:1px solid var(--line);border-radius:12px;padding:10px;margin:12px 0}
+    fieldset.group legend{padding:0 6px;font-weight:600}
+    .row{display:grid;grid-template-columns:220px 1fr;gap:10px;align-items:center;margin:6px 0}
+    .row input[type="text"],.row input[type="number"]{width:100%;max-width:360px}
+    .hint{font-size:12px;color:var(--muted)}
+    #jsonPreview{background:#0a0f1d;color:#cbd5e1;border:1px solid var(--line);border-radius:12px;padding:10px;overflow:auto;min-height:220px;white-space:pre}
+    #status{min-height:20px;margin-top:8px}
+    #status .ok{color:#86efac} #status .err{color:#fca5a5}
+    /* role gate: oculta blocos master para client */
+    html[data-role="client"] [data-role-guard="master"]{display:none !important}
+    html[data-role="client"] .client-readonly{opacity:.7;pointer-events:none}
+    /* Scores */
+    #scoresList{max-height:420px;overflow:auto;border-top:1px solid var(--line);margin-top:8px}
+    .scoreItem{display:grid;grid-template-columns:36px 1fr auto;gap:8px;align-items:center;padding:8px 4px;border-bottom:1px dashed var(--line)}
+    .rank{opacity:.85}.pts{font-weight:700}
+    /* Auth */
+    #authView{display:block;max-width:460px;margin:40px auto 0}
+    #authView .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px}
+    #authView .row{grid-template-columns:120px 1fr}
+</style>
 </head>
-
 <body>
-    <header>
-        <div class="title">Flappy — Configuração</div>
-        <div class="actions">
-            <button class="btn" id="saveLocal">Salvar no navegador</button>
-            <button class="btn" id="loadLocal">Carregar do navegador</button>
-            <button class="btn" id="exportJson">Exportar JSON</button>
-            <label class="import">Importar JSON<input id="importFile" type="file" accept="application/json"></label>
-            <button class="btn" id="copyJson">Copiar JSON</button>
-            <button class="btn" id="resetDefaults">Restaurar defaults</button>
-            <a class="link" href="./game.html">▶ Abrir jogo</a>
-        </div>
+<header>
+    <div class="title">Flappy — Configuração</div>
+    <div class="actions">
+    <span id="whoami" class="hint">Deslogado</span>
+    <button class="btn" id="btnLogout" style="display:none">Sair</button>
+    <input class="input" id="cfgSlug" placeholder="slug (ex: default)" style="width:160px" />
+    <button class="btn" id="loadSupabase">Carregar</button>
+    <button class="btn" id="saveSupabase">Salvar</button>
+    <a class="link" href="./game.html">▶ Abrir jogo</a>
+    </div>
     </header>
 
-    <div class="wrap">
-        <!-- COLUNA ESQUERDA -->
-        <div class="panel">
-            <h2>Parâmetros</h2>
+<!-- LOGIN: visível por padrão -->
+<div id="authView">
+    <div class="card">
+        <h2>Entrar</h2>
+        <div class="row"><label>Email</label><input class="input" id="authEmail" type="email"
+                placeholder="master@local ou client@local"></div>
+        <div class="row"><label>Senha</label><input class="input" id="authPass" type="password" placeholder="123456">
+        </div>
+        <div class="row"><span></span>
+            <div style="display:flex;gap:8px">
+                <button class="btn" id="doSignIn">Entrar</button>
+            </div>
+        </div>
+        <div class="hint" style="margin-top:8px">
+            <div><b>Master:</b> master@local / 123456</div>
+            <div><b>Client:</b> client@local / 123456</div>
+        </div>
+        <div id="authMsg" class="hint" style="margin-top:8px"></div>
+    </div>
+</div>
 
-            <fieldset class="group">
-                <legend>Board</legend>
-                <div class="row"><label for="board.width">Width</label><input type="number" id="board.width" step="1">
-                </div>
-                <div class="row"><label for="board.height">Height</label><input type="number" id="board.height"
-                        step="1"></div>
-                <div class="row"><label for="board.background">Background</label><input type="text"
-                        id="board.background" placeholder="#70c5ce"></div>
-            </fieldset>
+<!-- APP -->
+<div class="wrap" id="appView" style="display:none">
+    <!-- COLUNA ESQUERDA -->
+    <div class="panel">
+        <h2>Parâmetros</h2>
 
-            <fieldset class="group">
-                <legend>Assets</legend>
-                <div class="row"><label for="assets.bird">Bird (fallback)</label><input type="text" id="assets.bird"
-                        placeholder="./flappybird.png"></div>
-                <div class="row"><label for="assets.birdFrames">Bird frames (CSV)</label><input type="text"
-                        id="assets.birdFrames" placeholder="./flappy-0.png, ./flappy-1.png, ./flappy-2.png"></div>
-                <div class="row"><label for="assets.topPipe">Top Pipe URL</label><input type="text" id="assets.topPipe"
-                        placeholder="./toppipe.png"></div>
-                <div class="row"><label for="assets.bottomPipe">Bottom Pipe URL</label><input type="text"
-                        id="assets.bottomPipe" placeholder="./bottompipe.png"></div>
-            </fieldset>
+    <!-- MASTER: Board -->
+    <fieldset class="group" data-role-guard="master">
+        <legend>Board</legend>
+        <div class="row"><label for="board.width">Width</label><input type="number" id="board.width" step="1"></div>
+        <div class="row"><label for="board.height">Height</label><input type="number" id="board.height" step="1"></div>
+        <div class="row"><label for="board.background">Background</label><input type="text" id="board.background"
+                placeholder="#70c5ce"></div>
+        </fieldset>
 
-            <fieldset class="group">
-                <legend>SFX (opcionais)</legend>
-                <div class="row"><label for="assets.sfx.flap">Flap</label><input type="text" id="assets.sfx.flap"
-                        placeholder="./sfx/flap.mp3"></div>
-                <div class="row"><label for="assets.sfx.score">Score</label><input type="text" id="assets.sfx.score"
-                        placeholder="./sfx/score.mp3"></div>
-                <div class="row"><label for="assets.sfx.hit">Hit</label><input type="text" id="assets.sfx.hit"
-                        placeholder="./sfx/hit.mp3"></div>
-            </fieldset>
+    <!-- MASTER: Bird -->
+    <fieldset class="group" data-role-guard="master">
+        <legend>Bird</legend>
+        <div class="row"><label for="bird.width">Width</label><input type="number" id="bird.width" step="1"></div>
+        <div class="row"><label for="bird.height">Height</label><input type="number" id="bird.height" step="1"></div>
+        <div class="row"><label for="bird.startXPercent">Start X (%)</label><input type="number" id="bird.startXPercent"
+                step="0.1"></div>
+        <div class="row"><label for="bird.startYPercent">Start Y (%)</label><input type="number" id="bird.startYPercent"
+                step="0.1"></div>
+        <div class="row"><label for="bird.flapForce">Flap Force</label><input type="number" id="bird.flapForce" step="0.1">
+        </div>
+        <div class="row"><label for="bird.maxFallSpeed">Max Fall Speed</label><input type="number" id="bird.maxFallSpeed"
+                step="0.1"></div>
+        <div class="row"><label for="bird.hitboxPadding">Hitbox padding (px)</label><input type="number" id="bird.hitboxPadding"
+                step="1"></div>
+        </fieldset>
 
-            <fieldset class="group">
-                <legend>Bird</legend>
-                <div class="row"><label for="bird.width">Width</label><input type="number" id="bird.width" step="1">
-                </div>
-                <div class="row"><label for="bird.height">Height</label><input type="number" id="bird.height" step="1">
-                </div>
-                <div class="row"><label for="bird.startXPercent">Start X (%)</label><input type="number"
-                        id="bird.startXPercent" step="0.1"></div>
-                <div class="row"><label for="bird.startYPercent">Start Y (%)</label><input type="number"
-                        id="bird.startYPercent" step="0.1"></div>
-                <div class="row"><label for="bird.flapForce">Flap Force</label><input type="number" id="bird.flapForce"
-                        step="0.1"></div>
-                <div class="row"><label for="bird.maxFallSpeed">Max Fall Speed</label><input type="number"
-                        id="bird.maxFallSpeed" step="0.1"></div>
-                <div class="row"><label for="bird.hitboxPadding">Hitbox padding (px)</label><input type="number"
-                        id="bird.hitboxPadding" step="1"></div>
-            </fieldset>
+    <!-- MASTER: Tilt -->
+    <fieldset class="group" data-role-guard="master">
+        <legend>Bird Tilt</legend>
+        <div class="row"><label for="bird.tilt.enabled">Tilt habilitado</label><input type="checkbox" id="bird.tilt.enabled" />
+        </div>
+        <div class="row"><label for="bird.tilt.upDeg">Up (deg)</label><input type="number" id="bird.tilt.upDeg" step="1"></div>
+        <div class="row"><label for="bird.tilt.downDeg">Down (deg)</label><input type="number" id="bird.tilt.downDeg" step="1">
+        </div>
+        <div class="row"><label for="bird.tilt.responsiveness">Responsiveness</label><input type="number"
+                id="bird.tilt.responsiveness" step="0.01"></div>
+        <div class="row"><label for="bird.tilt.velForMaxUp">Vel p/ Up máx</label><input type="number" id="bird.tilt.velForMaxUp"
+                step="0.1"></div>
+        <div class="row"><label for="bird.tilt.velForMaxDown">Vel p/ Down máx</label><input type="number"
+                id="bird.tilt.velForMaxDown" step="0.1"></div>
+        <div class="row"><label for="bird.tilt.snapOnFlap">Snap on flap</label><input type="checkbox"
+                id="bird.tilt.snapOnFlap" /></div>
+        <div class="row"><label for="bird.tilt.minDeg">Clamp min (deg)</label><input type="number" id="bird.tilt.minDeg"
+                step="1"></div>
+        <div class="row"><label for="bird.tilt.maxDeg">Clamp max (deg)</label><input type="number" id="bird.tilt.maxDeg"
+                step="1"></div>
+        </fieldset>
 
-            <fieldset id="group-tilt" class="group">
-                <legend>Bird Tilt</legend>
-                <div class="row"><label for="bird.tilt.enabled">Tilt habilitado</label><input type="checkbox"
-                        id="bird.tilt.enabled" /></div>
-                <div class="row"><label for="bird.tilt.upDeg">Up (deg)</label>
-                    <div><input type="range" id="bird.tilt.upDeg" min="-90" max="0" step="1" value="-25" /><output
-                            for="bird.tilt.upDeg">-25</output></div>
-                </div>
-                <div class="row"><label for="bird.tilt.downDeg">Down (deg)</label>
-                    <div><input type="range" id="bird.tilt.downDeg" min="0" max="90" step="1" value="70" /><output
-                            for="bird.tilt.downDeg">70</output></div>
-                </div>
-                <div class="row"><label for="bird.tilt.responsiveness">Responsiveness</label>
-                    <div><input type="range" id="bird.tilt.responsiveness" min="0" max="1" step="0.01"
-                            value="0.15" /><output for="bird.tilt.responsiveness">0.15</output></div>
-                </div>
-                <div class="row"><label for="bird.tilt.velForMaxUp">Vel p/ Up máx</label>
-                    <div><input type="range" id="bird.tilt.velForMaxUp" min="0" max="12" step="0.1" value="6" /><output
-                            for="bird.tilt.velForMaxUp">6</output></div>
-                </div>
-                <div class="row"><label for="bird.tilt.velForMaxDown">Vel p/ Down máx</label>
-                    <div><input type="range" id="bird.tilt.velForMaxDown" min="4" max="20" step="0.1"
-                            value="12" /><output for="bird.tilt.velForMaxDown">12</output></div>
-                </div>
-                <div class="row"><label for="bird.tilt.snapOnFlap">Snap on flap</label><input type="checkbox"
-                        id="bird.tilt.snapOnFlap" checked /></div>
-                <div class="row"><label for="bird.tilt.minDeg">Clamp min (deg)</label>
-                    <div><input type="range" id="bird.tilt.minDeg" min="-90" max="0" step="1" value="-45" /><output
-                            for="bird.tilt.minDeg">-45</output></div>
-                </div>
-                <div class="row"><label for="bird.tilt.maxDeg">Clamp max (deg)</label>
-                    <div><input type="range" id="bird.tilt.maxDeg" min="0" max="90" step="1" value="90" /><output
-                            for="bird.tilt.maxDeg">90</output></div>
-                </div>
+    <!-- MASTER: Flap Anim -->
+    <fieldset class="group" data-role-guard="master">
+        <legend>Bird Flap Anim</legend>
+        <div class="row"><label for="bird.flapAnim.enabled">Enabled</label><input type="checkbox" id="bird.flapAnim.enabled">
+        </div>
+        <div class="row"><label for="bird.flapAnim.durationMs">Duration (ms)</label><input type="number"
+                id="bird.flapAnim.durationMs" step="1"></div>
+        <div class="row"><label for="bird.flapAnim.fps">FPS</label><input type="number" id="bird.flapAnim.fps" step="1"></div>
+        </fieldset>
 
-                <div class="tilt-preview-wrap">
-                    <canvas id="tiltPreview" width="240" height="120"></canvas>
-                    <div class="hint">A prévia oscila uma velY fictícia e aplica o tilt atual.</div>
-                </div>
-            </fieldset>
+    <!-- MASTER: Physics -->
+    <fieldset class="group" data-role-guard="master">
+        <legend>Physics</legend>
+        <div class="row"><label for="physics.gravity">Gravity</label><input type="number" id="physics.gravity" step="0.01">
+        </div>
+        </fieldset>
 
-            <fieldset class="group">
-                <legend>Bird Flap Anim</legend>
-                <div class="row"><label for="bird.flapAnim.enabled">Enabled</label><input type="checkbox"
-                        id="bird.flapAnim.enabled"></div>
-                <div class="row"><label for="bird.flapAnim.durationMs">Duration (ms)</label><input type="number"
-                        id="bird.flapAnim.durationMs" step="1"></div>
-                <div class="row"><label for="bird.flapAnim.fps">FPS</label><input type="number" id="bird.flapAnim.fps"
-                        step="1"></div>
-            </fieldset>
+    <!-- MASTER: Pipes -->
+    <fieldset class="group" data-role-guard="master">
+        <legend>Pipes</legend>
+        <div class="row"><label for="pipes.width">Width</label><input type="number" id="pipes.width" step="1"></div>
+        <div class="row"><label for="pipes.height">Height</label><input type="number" id="pipes.height" step="1"></div>
+        <div class="row"><label for="pipes.scrollSpeed">Scroll Speed</label><input type="number" id="pipes.scrollSpeed"
+                step="0.1"></div>
+        <div class="row"><label for="pipes.gapPercent">Gap (%)</label><input type="number" id="pipes.gapPercent" step="0.1">
+        </div>
+        <div class="row"><label for="pipes.randomBasePercent">Random Base (%)</label><input type="number"
+                id="pipes.randomBasePercent" step="0.1"></div>
+        <div class="row"><label for="pipes.randomRangePercent">Random Range (%)</label><input type="number"
+                id="pipes.randomRangePercent" step="0.1"></div>
+        <div class="row"><label for="pipes.autoStretchToEdges">Auto-stretch to edges</label><input type="checkbox"
+                id="pipes.autoStretchToEdges"></div>
+        <div class="row"><label for="pipes.edgeOverflowPx">Edge overflow (px)</label><input type="number"
+                id="pipes.edgeOverflowPx" step="1"></div>
+        </fieldset>
 
-            <fieldset class="group">
-                <legend>Physics</legend>
-                <div class="row"><label for="physics.gravity">Gravity</label><input type="number" id="physics.gravity"
-                        step="0.01"></div>
-            </fieldset>
+    <!-- SEMPRE: Difficulty -->
+    <fieldset class="group" data-scope="difficulty">
+        <legend>Difficulty (Cliente pode editar)</legend>
+        <div class="row"><label for="difficulty.rampEnabled">Ramp enabled (score)</label><input type="checkbox"
+                id="difficulty.rampEnabled"></div>
+        <div class="row"><label for="difficulty.speedPerScore">+Speed per score</label><input type="number"
+                id="difficulty.speedPerScore" step="0.01"></div>
+        <div class="row"><label for="difficulty.minGapPercent">Min gap (%)</label><input type="number"
+                id="difficulty.minGapPercent" step="0.1"></div>
+        <div class="row"><label for="difficulty.gapStepPerScore">-Gap per score (%)</label><input type="number"
+                id="difficulty.gapStepPerScore" step="0.1"></div>
+        <hr style="border:none;border-top:1px solid var(--line);margin:6px 0">
+        <div class="row"><label for="difficulty.timeRampEnabled">Time ramp enabled</label><input type="checkbox"
+                id="difficulty.timeRampEnabled"></div>
+        <div class="row"><label for="difficulty.timeStartDelayMs">Time start delay (ms)</label><input type="number"
+                id="difficulty.timeStartDelayMs" step="1" placeholder="0 = após grace"></div>
+        <div class="row"><label for="difficulty.timeSpeedPerSec">+Speed per second</label><input type="number"
+                id="difficulty.timeSpeedPerSec" step="0.001"></div>
+        <div class="row"><label for="difficulty.timeMaxExtraSpeed">Max extra speed</label><input type="number"
+                id="difficulty.timeMaxExtraSpeed" step="0.1"></div>
+        <div class="row"><label for="difficulty.timeGapStepPerSec">-Gap per second (%)</label><input type="number"
+                id="difficulty.timeGapStepPerSec" step="0.01"></div>
+    </fieldset>
 
-            <fieldset class="group">
-                <legend>Pipes</legend>
-                <div class="row"><label for="pipes.width">Width</label><input type="number" id="pipes.width" step="1">
-                </div>
-                <div class="row"><label for="pipes.height">Height</label><input type="number" id="pipes.height"
-                        step="1"></div>
-                <div class="row"><label for="pipes.scrollSpeed">Scroll Speed</label><input type="number"
-                        id="pipes.scrollSpeed" step="0.1"></div>
-                <div class="row"><label for="pipes.gapPercent">Gap (%)</label><input type="number" id="pipes.gapPercent"
-                        step="0.1"></div>
-                <div class="row"><label for="pipes.randomBasePercent">Random Base (%)</label><input type="number"
-                        id="pipes.randomBasePercent" step="0.1"></div>
-                <div class="row"><label for="pipes.randomRangePercent">Random Range (%)</label><input type="number"
-                        id="pipes.randomRangePercent" step="0.1"></div>
-                <div class="row"><label for="pipes.autoStretchToEdges">Auto-stretch to edges</label><input
-                        type="checkbox" id="pipes.autoStretchToEdges"></div>
-                <div class="row"><label for="pipes.edgeOverflowPx">Edge overflow (px)</label><input type="number"
-                        id="pipes.edgeOverflowPx" step="1"></div>
-            </fieldset>
+    <!-- MASTER: Spawn -->
+    <fieldset class="group" data-role-guard="master">
+        <legend>Spawn</legend>
+        <div class="row"><label for="spawn.intervalMs">Interval (ms)</label><input type="number" id="spawn.intervalMs" step="1">
+        </div>
+        </fieldset>
 
-            <fieldset class="group">
-                <legend>Difficulty</legend>
-                <div class="row"><label for="difficulty.rampEnabled">Ramp enabled (score)</label><input type="checkbox"
-                        id="difficulty.rampEnabled"></div>
-                <div class="row"><label for="difficulty.speedPerScore">+Speed per score</label><input type="number"
-                        id="difficulty.speedPerScore" step="0.01"></div>
-                <div class="row"><label for="difficulty.minGapPercent">Min gap (%)</label><input type="number"
-                        id="difficulty.minGapPercent" step="0.1"></div>
-                <div class="row"><label for="difficulty.gapStepPerScore">-Gap per score (%)</label><input type="number"
-                        id="difficulty.gapStepPerScore" step="0.1"></div>
+    <!-- MASTER: Scoring -->
+    <fieldset class="group" data-role-guard="master">
+        <legend>Scoring</legend>
+        <div class="row"><label for="scoring.pointsPerPipe">Points per pipe</label><input type="number"
+                id="scoring.pointsPerPipe" step="0.1"></div>
+        </fieldset>
 
-                <!-- NOVOS CAMPOS: time-ramp -->
-                <hr style="border:none;border-top:1px solid #1f2937; margin:6px 0">
-                <div class="row"><label for="difficulty.timeRampEnabled">Time ramp enabled</label><input type="checkbox"
-                        id="difficulty.timeRampEnabled"></div>
-                <div class="row"><label for="difficulty.timeStartDelayMs">Time start delay (ms)</label><input
-                        type="number" id="difficulty.timeStartDelayMs" step="1" placeholder="0 = após grace"></div>
-                <div class="row"><label for="difficulty.timeSpeedPerSec">+Speed per second</label><input type="number"
-                        id="difficulty.timeSpeedPerSec" step="0.001" placeholder="px/frame por segundo"></div>
-                <div class="row"><label for="difficulty.timeMaxExtraSpeed">Max extra speed</label><input type="number"
-                        id="difficulty.timeMaxExtraSpeed" step="0.1"></div>
-                <div class="row"><label for="difficulty.timeGapStepPerSec">-Gap per second (%)</label><input
-                        type="number" id="difficulty.timeGapStepPerSec" step="0.01"
-                        placeholder="pontos percentuais/seg"></div>
-            </fieldset>
+    <!-- MASTER: UI -->
+    <fieldset class="group" data-role-guard="master">
+        <legend>UI</legend>
+        <div class="row"><label for="ui.font">Font</label><input type="text" id="ui.font" placeholder="45px sans-serif"></div>
+        <div class="row"><label for="ui.scoreColor">Score color</label><input type="text" id="ui.scoreColor"
+                placeholder="#ffffff"></div>
+        <div class="row"><label for="ui.gameOverText">GameOver text</label><input type="text" id="ui.gameOverText"
+                placeholder="GAME OVER"></div>
+        <div class="row"><label for="ui.gameOverFont">GameOver font</label><input type="text" id="ui.gameOverFont"
+                placeholder="45px sans-serif"></div>
+        <div class="row"><label for="ui.gameOverColor">GameOver color</label><input type="text" id="ui.gameOverColor"
+                placeholder="#ffffff"></div>
+        </fieldset>
 
-
-            <fieldset class="group">
-                <legend>Spawn</legend>
-                <div class="row"><label for="spawn.intervalMs">Interval (ms)</label><input type="number"
-                        id="spawn.intervalMs" step="1"></div>
-            </fieldset>
-
-            <fieldset class="group">
-                <legend>Scoring</legend>
-                <div class="row"><label for="scoring.pointsPerPipe">Points per pipe</label><input type="number"
-                        id="scoring.pointsPerPipe" step="0.1"></div>
-            </fieldset>
-
-            <fieldset class="group">
-                <legend>UI</legend>
-                <div class="row"><label for="ui.font">Font</label><input type="text" id="ui.font"
-                        placeholder="45px sans-serif"></div>
-                <div class="row"><label for="ui.scoreColor">Score color</label><input type="text" id="ui.scoreColor"
-                        placeholder="#ffffff"></div>
-                <div class="row"><label for="ui.gameOverText">GameOver text</label><input type="text"
-                        id="ui.gameOverText" placeholder="GAME OVER"></div>
-                <div class="row"><label for="ui.gameOverFont">GameOver font</label><input type="text"
-                        id="ui.gameOverFont" placeholder="45px sans-serif"></div>
-                <div class="row"><label for="ui.gameOverColor">GameOver color</label><input type="text"
-                        id="ui.gameOverColor" placeholder="#ffffff"></div>
-            </fieldset>
-
-            <fieldset class="group">
-                <legend>Controls</legend>
-                <div class="row"><label for="controls.jump">Jump keys (CSV)</label><input type="text" id="controls.jump"
-                        placeholder="Space, ArrowUp, KeyX"></div>
-            </fieldset>
-
-            <fieldset class="group">
-                <legend>Gameplay</legend>
-                <div class="row"><label for="gameplay.restartOnJump">Restart on jump</label><input type="checkbox"
-                        id="gameplay.restartOnJump"></div>
-                <div class="row"><label for="gameplay.gracePeriodMs">Grace period (ms)</label><input type="number"
-                        id="gameplay.gracePeriodMs" step="1"></div>
-                <div class="row"><label for="gameplay.pauseKey">Pause key (code)</label><input type="text"
-                        id="gameplay.pauseKey" placeholder="KeyP"></div>
-            </fieldset>
+    <!-- MASTER: Controls -->
+    <fieldset class="group" data-role-guard="master">
+        <legend>Controls</legend>
+        <div class="row"><label for="controls.jump">Jump keys (CSV)</label><input type="text" id="controls.jump"
+                placeholder="Space, ArrowUp, KeyX"></div>
+        </fieldset>
         </div>
 
-        <!-- COLUNA DIREITA -->
-        <div class="panel">
-            <h2>Prévia do JSON</h2>
-            <pre id="jsonPreview">{}</pre>
-            <div id="status"></div>
-            <p class="hint">
-                Salve no navegador para testar no <code>game.html</code>. Exportar cria <code>flappy-config.json</code>.
-            </p>
-        </div>
+    <!-- COLUNA DIREITA -->
+    <div class="panel">
+    <h2>Painel • Scores (Top 50)</h2>
+    <div id="scoresList">
+        <div class="hint">Carregando…</div>
+    </div>
+    
+    <h2 style="margin-top:22px">Prévia do JSON</h2>
+    <pre id="jsonPreview">{}</pre>
+    <div id="status"></div>
+    <p class="hint">Cliente edita apenas <b>Difficulty</b>. Master edita tudo.</p>
+    </div>
     </div>
 
-    <script>document.addEventListener('contextmenu', e => e.preventDefault());</script>
-    <script type="module" src="./src/config.js"></script>
-
-    <!-- Prévia interativa do tilt -->
-    <script>
-        (function () {
-            const cvs = document.getElementById('tiltPreview');
-            if (!cvs) return;
-            const ctx = cvs.getContext('2d');
-
-            function getVal(id) {
-                const el = document.getElementById(id);
-                if (!el) return null;
-                const t = el.type;
-                if (t === 'checkbox') return !!el.checked;
-                if (t === 'number' || t === 'range') return el.value === '' ? 0 : Number(el.value);
-                return el.value;
-            }
-            const clamp = (n, min, max) => Math.max(min, Math.min(max, n));
-            const mapRangeClamped = (v, inMin, inMax, outMin, outMax) => { if (inMax === inMin) return outMin; const t = clamp((v - inMin) / (inMax - inMin), 0, 1); return outMin + t * (outMax - outMin); };
-
-            let v = -Math.abs(Number(getVal('bird.tilt.velForMaxUp') ?? 6));
-            let dir = 1;
-
-            function roundRect(ctx, x, y, w, h, r) { r = Math.min(r, w / 2, h / 2); ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r); ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath(); }
-
-            function frame() {
-                const enabled = !!getVal('bird.tilt.enabled');
-                const upDeg = Number(getVal('bird.tilt.upDeg'));
-                const downDeg = Number(getVal('bird.tilt.downDeg'));
-                const velUpRef = -Math.abs(Number(getVal('bird.tilt.velForMaxUp') ?? 6));
-                const velDnRef = Math.abs(Number(getVal('bird.tilt.velForMaxDown') ?? 12));
-                const minDeg = Number(getVal('bird.tilt.minDeg') ?? -45);
-                const maxDeg = Number(getVal('bird.tilt.maxDeg') ?? 90);
-
-                const step = 0.08;
-                if (dir > 0) { v += step; if (v >= velDnRef) dir = -1; } else { v -= step; if (v <= velUpRef) dir = 1; }
-                const target = enabled ? mapRangeClamped(v, velUpRef, velDnRef, upDeg, downDeg) : 0;
-                const angle = clamp(target, minDeg, maxDeg) * Math.PI / 180;
-
-                ctx.clearRect(0, 0, cvs.width, cvs.height);
-                ctx.save(); ctx.translate(70, cvs.height / 2); ctx.rotate(angle);
-                const w = 52, h = 36; ctx.fillStyle = '#fbbf24'; roundRect(ctx, -w / 2, -h / 2, w, h, 7); ctx.fill();
-                ctx.fillStyle = '#ef4444'; ctx.beginPath(); ctx.moveTo(w / 2, -6); ctx.lineTo(w / 2 + 12, 0); ctx.lineTo(w / 2, 6); ctx.closePath(); ctx.fill();
-                ctx.restore();
-
-                ctx.fillStyle = '#94a3b8'; ctx.font = '12px system-ui, sans-serif';
-                ctx.fillText(`velY: ${v.toFixed(2)} → tilt: ${Number(target).toFixed(1)}°`, 120, cvs.height / 2 + 4);
-                requestAnimationFrame(frame);
-            }
-            ['input', 'change'].forEach(evt => {
-                document.getElementById('group-tilt')?.addEventListener(evt, () => {
-                    const velUpRef = -Math.abs(Number(getVal('bird.tilt.velForMaxUp') ?? 6));
-                    const velDnRef = Math.abs(Number(getVal('bird.tilt.velForMaxDown') ?? 12));
-                    v = clamp(v, velUpRef, velDnRef);
-                });
-            });
-            requestAnimationFrame(frame);
-        })();
-    </script>
+<script>document.addEventListener('contextmenu', e => e.preventDefault());</script>
+<script type="module" src="./src/config.js"></script>
 </body>
-
 </html>
