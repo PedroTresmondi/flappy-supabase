@@ -1,3 +1,2 @@
-import { boot } from './game';
-boot();
-console.log('Origin:', location.origin);
+import { boot } from './game.js';
+window.addEventListener('DOMContentLoaded', boot);

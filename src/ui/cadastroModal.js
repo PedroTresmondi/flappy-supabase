@@ -1,12 +1,9 @@
-// src/ui/cadastroModal.js
 "use strict";
 
-// Só guardamos o NOME
 const STORAGE_KEY = "flappy:player";
 
 let overlay, inputName, errEl, ctaWrap;
 
-// BASE para funcionar em Vite/GitHub Pages igualmente
 const BASE =
   typeof import.meta !== "undefined" &&
     import.meta.env &&
@@ -21,9 +18,10 @@ const joinBase = (p) => {
 };
 
 const ASSETS = {
+  botoes: joinBase("assets/img/botoes.png"),
   toque: joinBase("assets/img/toque.png"),
   hand: joinBase("assets/img/handClick.png"),
-  heroBird: joinBase("assets/img/bird_hero.png"), // se não existir, some sozinho
+  heroBird: joinBase("assets/img/flappybird.png"), // seu herói
 };
 
 // ---------------- styles ----------------
@@ -64,33 +62,64 @@ function ensureStyles() {
   #cadOverlay .line-input::placeholder{ color:#ffffffcc }
   #cadOverlay .line{ width:min(86vw,640px); height:0; border-bottom:4px solid #ffffff33; margin-top:-12px }
 
-  /* Área clicável “Toque” + pássaro + mão */
-  #cadOverlay .cta { position:relative; display:flex; justify-content:center; align-items:flex-end; padding-bottom:11vh; }
-  #cadOverlay .cta .toque { position:absolute; bottom:14vh; width:min(26vw,180px); image-rendering:pixelated; filter:drop-shadow(0 2px 0 #0003) }
+  /* Área clicável (submit) = camadas botoes + bird + hand */
+  #cadOverlay .cta {
+    position:relative; display:flex; justify-content:center; align-items:flex-end;
+    padding-bottom:11vh;
+  }
+
+  /* SPRITE CENTRAL (duas setas laranjas) */
+  #cadOverlay .cta .botoes{
+    position:absolute; left:50%; transform:translateX(-50%);
+    bottom:14vh; width:min(70vw, 520px);
+    image-rendering:pixelated; filter:drop-shadow(0 2px 0 #0003);
+    z-index:1;
+  }
+
+  /* Fallback: duas imagens individuais de “Toque” */
+  #cadOverlay .cta .toque { position:absolute; bottom:14vh; width:min(26vw,180px); image-rendering:pixelated; filter:drop-shadow(0 2px 0 #0003); z-index:1; }
   #cadOverlay .cta .toque.left { left:6vw; transform:scaleX(-1) }
   #cadOverlay .cta .toque.right{ right:6vw }
 
+  /* Pássaro centralizado por cima das setas */
   #cadOverlay .cta .hero{
-    width:min(26vw, 200px); image-rendering:pixelated; filter:drop-shadow(0 4px 0 #0003);
-    animation:hero-bob 1.8s ease-in-out infinite;
+    position:absolute; left:50%; transform:translateX(-50%);
+    bottom:14vh;
+    width:min(26vw, 200px);
+    image-rendering:pixelated; filter:drop-shadow(0 4px 0 #0003);
+    animation:cad-hero-bob 1.8s ease-in-out infinite;
+    z-index:2;
   }
+
+  /* Mão branca animada logo abaixo */
   #cadOverlay .cta .hand{
-    position:absolute; bottom:8vh; width:min(15vw,130px); image-rendering:pixelated;
-    animation:hand-tap 1.15s ease-in-out infinite; transform-origin:10% 10%;
+    position:absolute; left:50%; transform:translateX(-50%);
+    bottom:8vh; width:min(15vw,130px); image-rendering:pixelated;
+    animation:cad-hand-tap 1.15s ease-in-out infinite; transform-origin:10% 10%;
     filter:drop-shadow(0 2px 0 #0003);
+    z-index:3;
   }
+
   #cadOverlay .cta.disabled{ opacity:.5; pointer-events:none }
 
   #cadOverlay .err{ text-align:center; color:#ffd2d2; font:600 clamp(12px, 2vh, 16px)/1.2 system-ui; min-height:18px; margin-top:4px; text-shadow:0 1px 0 #0006 }
 
-  /* pequenas animações */
-  @keyframes hero-bob { 0%,100%{ transform:translateY(-8px)} 50%{ transform:translateY(4px)} }
-  @keyframes hand-tap { 0%,100%{ transform:translate(0,0) scale(1)} 40%{ transform:translate(12px,12px) scale(.92)} 60%{ transform:translate(0,0) scale(1)} }
+  /* Animações NOMEADAS para o cadastro (evita conflito com start overlay) */
+  @keyframes cad-hero-bob {
+    0%,100%{ transform:translateX(-50%) translateY(-8px) }
+    50%{ transform:translateX(-50%) translateY(4px) }
+  }
+  @keyframes cad-hand-tap {
+    0%,100%{ transform:translateX(-50%) translate(0,0) scale(1)}
+    40%{ transform:translateX(-50%) translate(12px,12px) scale(.92)}
+    60%{ transform:translateX(-50%) translate(0,0) scale(1)}
+  }
 
   /* Responsivo telas baixas */
   @media (max-height:740px){
     #cadOverlay .form{ padding-top:7vh }
     #cadOverlay .cta{ padding-bottom:8vh }
+    #cadOverlay .cta .botoes{ bottom:11vh }
     #cadOverlay .cta .toque{ bottom:11vh }
   }
   `;
@@ -104,6 +133,16 @@ function ensureDom() {
 
   overlay = document.createElement("div");
   overlay.id = "cadOverlay";
+
+  // Escolhe bloco de setas: sprite único (botoes.png) OU fallback com 2x toque.png
+  const arrows =
+    ASSETS.botoes
+      ? `<img class="botoes" src="${ASSETS.botoes}" alt="Toque">`
+      : `
+         <img class="toque left"  src="${ASSETS.toque}" alt="Toque">
+         <img class="toque right" src="${ASSETS.toque}" alt="Toque">
+        `;
+
   overlay.innerHTML = `
     <div class="wrap">
       <div></div>
@@ -115,11 +154,10 @@ function ensureDom() {
         <div id="cadErr" class="err"></div>
       </div>
 
-      <div class="cta" id="cadCta">
-        <img class="toque left"  src="${ASSETS.toque}" alt="Toque">
+      <div class="cta" id="cadCta" aria-label="Confirmar nome e começar">
+        ${arrows}
         ${ASSETS.heroBird ? `<img class="hero" src="${ASSETS.heroBird}" alt="bird">` : ""}
-        <img class="hand" src="${ASSETS.hand}" alt="tap">
-        <img class="toque right" src="${ASSETS.toque}" alt="Toque">
+        ${ASSETS.hand ? `<img class="hand" src="${ASSETS.hand}" alt="tap">` : ""}
       </div>
     </div>
   `;

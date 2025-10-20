@@ -3,6 +3,7 @@
 
 import { supabase } from './supabase';
 import { ensureCadastro, getLocalPlayer, showCadastroModal } from './ui/cadastroModal';
+import { installPixellari, waitPixellari, applyPixellariToCfg } from './ui/fontLoader';
 
 // ================== BASE/ASSETS (GitHub Pages friendly) ==================
 const BASE = (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.BASE_URL) ? import.meta.env.BASE_URL : '/';
@@ -37,7 +38,7 @@ const DEFAULT_ASSETS = {
 
 // UI do overlay inicial
 const UI_ASSETS = {
-  title: joinBase('assets/img/logo_title.png'),
+  title: joinBase('assets/img/logo.png'),
   heroBird: joinBase('assets/img/flappybird.png'),
   hand: joinBase('assets/img/handClick.png'),
   play: joinBase('assets/img/play.png'),
@@ -159,9 +160,17 @@ let death = {
 
 // ================== BOOT ==================
 export async function boot() {
+  // 1) fonte para DOM + canvas
+  installPixellari();
+  await waitPixellari();
+
+  // 2) config normal
   cfg = await loadConfigSanitized();
   cfg = forceBoardToTarget(cfg, TARGET_W, TARGET_H);
   cfg = applyUniformScale(cfg, BASE_W, BASE_H);
+
+  // 3) aplicar fonte na UI do HUD
+  cfg = applyPixellariToCfg(cfg);
 
   setupCanvas();
   await loadAssets();
@@ -174,6 +183,7 @@ export async function boot() {
   showStartOverlay();
   startBgLoop();
 }
+
 
 // ================== CICLO DE VIDA ==================
 function resetRunState() {
@@ -194,7 +204,7 @@ function resetRunState() {
   activeTimeMs = 0; timeRampStartTs = 0; lastFlapTs = -1;
 
   bgScrollX = 0;
-  bgFrozen = false; // NOVO
+  bgFrozen = false; 
 
   // reset death
   dying = false;
@@ -1080,7 +1090,11 @@ function ensureStartOverlay() {
     #startOverlay .btn img{display:block;height:min(180px,11vh)}
     #startOverlay .btn:hover{transform:translateY(-2px)}
     #startOverlay .btn:active{transform:translateY(2px)}
-    @keyframes hero-bob{0%,100%{transform:translate(-50%,-52%)}50%{transform:translate(-50%,-48%)}}
+@keyframes hero-bob{
+  0%,100% { transform: translate(-50%,-50%); } /* começa e termina exatamente no centro */
+  25%     { transform: translate(-50%,-52%); } /* sobe um pouco */
+  75%     { transform: translate(-50%,-48%); } /* desce um pouco */
+}
     @keyframes hand-tap{0%,100%{transform:translate(0,0) scale(1)}40%{transform:translate(12px,12px) scale(.92)}60%{transform:translate(0,0) scale(1)}}
   `;
   document.head.appendChild(st);
@@ -1103,7 +1117,19 @@ function ensureStartOverlay() {
   document.getElementById('btnStart')?.addEventListener('click', (e) => { e.preventDefault(); startGame(); });
   document.getElementById('btnScores')?.addEventListener('click', (e) => { e.preventDefault(); showScoresOverlay(); });
 }
-function showStartOverlay() { startOverlay?.classList.add('show'); uiLocked = true; startBgLoop(); }
+function showStartOverlay() {
+  startOverlay?.classList.add('show');
+  uiLocked = true;
+  startBgLoop();
+
+  const hero = startOverlay?.querySelector('.hero');
+  if (hero) {
+    hero.style.animation = 'none';
+
+    hero.offsetHeight;
+    hero.style.animation = '';
+  }
+}
 function hideStartOverlay() { startOverlay?.classList.remove('show'); uiLocked = false; }
 
 // ================== OVERLAY TOP 10 ==================
@@ -1113,68 +1139,71 @@ function ensureScoresOverlay() {
   const st = document.createElement('style');
   st.id = 'scoresStyles';
   st.textContent = `
-    #scoresOverlay{position:fixed;inset:0;display:none;z-index:1000;pointer-events:auto}
-    #scoresOverlay.show{display:block}
-    #scoresOverlay .wrap{
-      position:absolute; inset:0;
-      display:grid; grid-template-rows: auto auto 1fr;
-      justify-items:center; align-content:start;
-      padding-top:min(4vh, 24px);
-    }
-    #scoresOverlay .logo{
-      width:min(68vw, 420px);
-      image-rendering:pixelated; image-rendering:crisp-edges;
-      filter:drop-shadow(0 2px 0 rgba(0,0,0,.20));
-      user-select:none; -webkit-user-drag:none;
-    }
-    #scoresOverlay .title{
-      width:100%; max-width:min(88vw, 520px);
-      margin-top:min(3vh, 22px); margin-bottom:8px;
-      font-weight:900; color:#fff;
-      font-size:clamp(22px, 5vh, 36px);
-      text-shadow:
-        -2px -2px 0 #0a0a0a, 2px -2px 0 #0a0a0a,
-        -2px  2px 0 #0a0a0a, 2px  2px 0 #0a0a0a,
-        0 2px 0 #0a0a0a;
-      user-select:none;
-      padding-left:calc((100% - min(88vw,520px))/2);
-    }
-    #scoresOverlay .list{
-      width:100%; max-width:min(88vw, 520px);
-      height:100%; overflow:auto; padding:4px 8px 24px 8px;
-    }
-    #scoresOverlay .item{
-      display:grid; grid-template-columns: 48px 1fr auto; align-items:center;
-      gap:10px; padding:8px 2px;
-    }
-    #scoresOverlay .item + .item{ border-top:1px dashed rgba(255,255,255,.18) }
-    #scoresOverlay .bird{
-      width:42px; height:auto; image-rendering:pixelated;
-      filter:drop-shadow(0 1px 0 rgba(0,0,0,.25));
-      user-select:none; -webkit-user-drag:none;
-    }
-    #scoresOverlay .name{
-      color:#ffffff; font-weight:600; letter-spacing:.4px;
-      font-size:clamp(14px, 2.4vh, 18px);
-      text-shadow:
-        -1px -1px 0 #0a0a0a, 1px -1px 0 #0a0a0a,
-        -1px  1px 0 #0a0a0a, 1px  1px 0 #0a0a0a;
-      white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
-    }
-    #scoresOverlay .pts{
-      color:#ffffff; font-weight:900;
-      font-size:clamp(16px, 2.6vh, 20px);
-      text-shadow:
-        -1px -1px 0 #0a0a0a, 1px -1px 0 #0a0a0a,
-        -1px  1px 0 #0a0a0a, 1px  1px 0 #0a0a0a;
-    }
-    #scoresOverlay .hint{
-      position:absolute; left:0; right:0; bottom:2vh; text-align:center;
-      color:#ffffffcc; font-size:clamp(12px, 2vh, 14px);
-      text-shadow:-1px -1px 0 #0a0a0a,1px -1px 0 #0a0a0a,-1px 1px 0 #0a0a0a,1px 1px 0 #0a0a0a;
-      user-select:none;
-    }
-  `;
+  #scoresOverlay{position:fixed;inset:0;display:none;z-index:1000;pointer-events:auto}
+  #scoresOverlay.show{display:block}
+  #scoresOverlay .wrap{
+    position:absolute; inset:0;
+    display:grid; grid-template-rows: auto auto 1fr;
+    justify-items:center; align-content:start;
+    padding-top:min(4vh, 24px);
+  }
+  #scoresOverlay .logo{
+    width:min(68vw, 420px);
+    image-rendering:pixelated; image-rendering:crisp-edges;
+    filter:drop-shadow(0 2px 0 rgba(0,0,0,.20));
+    user-select:none; -webkit-user-drag:none;
+  }
+  #scoresOverlay .title{
+    width:100%; max-width:min(88vw, 520px);
+    margin-top:min(3vh, 22px); margin-bottom:8px;
+    font-weight:900; color:#fff;
+    font-size:clamp(22px, 5vh, 36px);
+    text-shadow:
+      -2px -2px 0 #0a0a0a, 2px -2px 0 #0a0a0a,
+      -2px  2px 0 #0a0a0a, 2px  2px 0 #0a0a0a,
+      0 2px 0 #0a0a0a;
+    user-select:none;
+    padding-left:calc((100% - min(88vw,520px))/2);
+  }
+  #scoresOverlay .list{
+    width:100%; max-width:min(88vw, 520px);
+    height:100%; overflow:auto; padding:4px 8px 24px 8px;
+  }
+  #scoresOverlay .item{
+    display:grid; grid-template-columns: 48px 1fr auto; align-items:center;
+    gap:10px; padding:8px 2px;
+  }
+  #scoresOverlay .item + .item{ border-top:1px dashed rgba(255,255,255,.18) }
+  #scoresOverlay .bird{
+    width:42px; height:auto; image-rendering:pixelated;
+    filter:drop-shadow(0 1px 0 rgba(0,0,0,.25));
+    user-select:none; -webkit-user-drag:none;
+  }
+  #scoresOverlay .name{
+    color:#ffffff; font-weight:600; letter-spacing:.4px;
+    font-size:clamp(14px, 2.4vh, 18px);
+    text-shadow:
+      -1px -1px 0 #0a0a0a, 1px -1px 0 #0a0a0a,
+      -1px  1px 0 #0a0a0a, 1px  1px 0 #0a0a0a;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  }
+  #scoresOverlay .pts{
+    color:#ffffff; font-weight:900;
+    font-size:clamp(16px, 2.6vh, 20px);
+    text-shadow:
+      -1px -1px 0 #0a0a0a, 1px -1px 0 #0a0a0a,
+      -1px  1px 0 #0a0a0a, 1px  1px 0 #0a0a0a;
+  }
+  #scoresOverlay .hint{
+    position:absolute; left:0; right:0; bottom:2vh; text-align:center;
+    color:#ffffffcc; font-size:clamp(12px, 2vh, 14px);
+    text-shadow:-1px -1px 0 #0a0a0a,1px -1px 0 #0a0a0a,-1px 1px 0 #0a0a0a,1px 1px 0 #0a0a0a;
+    user-select:none;
+    cursor:pointer;
+    padding:10px 0;
+  }
+  #scoresOverlay .hint:active{ transform:translateY(1px) }
+`;
   document.head.appendChild(st);
 
   scoresOverlay = document.createElement('div');
@@ -1189,13 +1218,24 @@ function ensureScoresOverlay() {
   `;
   document.body.appendChild(scoresOverlay);
 
+  // clicar fora do card fecha
   scoresOverlay.addEventListener('click', () => {
     hideScoresOverlay();
     showStartOverlay();
   });
 
+  // impedir que cliques dentro do card fechem o overlay
   const wrap = scoresOverlay.querySelector('#scoresWrap');
   wrap.addEventListener('click', (e) => e.stopPropagation());
+
+  // <<< NOVO: clique no texto "Toque para voltar" fecha e volta à start screen >>>
+  const hint = scoresOverlay.querySelector('.hint');
+  hint?.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    hideScoresOverlay();
+    showStartOverlay();
+  });
 }
 
 async function showScoresOverlay() {
@@ -1235,9 +1275,13 @@ function renderTop10ListTo(listEl, rows) {
   `).join('');
 }
 
+
 // ================== OVERLAY RANK (GAME OVER) ==================
 function ensureRankOverlay() {
   if (document.getElementById('rankStyles')) return;
+
+  // caminho do balão
+  const panelBgUrl = joinBase('assets/img/modalBG.png');
 
   const st = document.createElement('style');
   st.id = 'rankStyles';
@@ -1245,6 +1289,7 @@ function ensureRankOverlay() {
     #rankOverlay{position:fixed;inset:0;display:none;z-index:1100;cursor:pointer}
     #rankOverlay.show{display:block}
     #rankOverlay .wrap{position:absolute;inset:0;display:grid;place-items:start center;pointer-events:auto}
+
     #rankOverlay .title{
       margin-top:4vh;color:#ffffff; font-weight:900; letter-spacing:1px;
       font-size:clamp(26px,5.5vh,44px);
@@ -1254,17 +1299,29 @@ function ensureRankOverlay() {
         0 2px 0 #0b0b0b;
       user-select:none;
     }
+
+    /* Painel com BG de imagem (balão) */
     #rankOverlay .panel{
-      margin-top:3vh;background:#fff7ea;border-radius:24px;padding:28px 34px;
-      box-shadow:
-        0 0 0 6px #221b22 inset,
-        0 0 0 12px #c9b8a6 inset,
-        0 10px 0 0 #221b22,
-        0 18px 0 0 #8a6f5a;
-      display:flex;align-items:center;gap:min(4vw,24px);
-      image-rendering:pixelated;
+      position:relative;
+      margin-top:3vh;
+      width:min(88vw, 620px);
+      aspect-ratio: 5 / 3;                 /* ajuste fino do formato do balão */
+      background-image: url('${panelBgUrl}');
+      background-repeat: no-repeat;
+      background-position: center;
+      background-size: contain;
+      image-rendering: pixelated;          /* deixar o sprite nítido */
+      display:flex; align-items:center; justify-content:center;
+      padding: clamp(18px, 3vh, 28px) clamp(22px, 4vh, 40px);
     }
-    #rankOverlay .panel .bird{ width:min(18vw,120px); filter:drop-shadow(0 2px 0 #0003) }
+
+    /* conteúdo por cima do balão */
+    #rankOverlay .panel-inner{
+      display:flex; align-items:center; gap:min(4vw,24px);
+    }
+
+    #rankOverlay .panel .bird{ width:min(18vw,120px); image-rendering:pixelated; filter:drop-shadow(0 2px 0 #0003) }
+
     #rankOverlay .score{
       font-weight:900; color:#ffffff; background:#111;
       padding:2px 12px; border-radius:10px; display:inline-block;
@@ -1274,6 +1331,7 @@ function ensureRankOverlay() {
         -6px  6px 0 #000, 6px  6px 0 #000,
         0 4px 0 #000;
     }
+
     #rankOverlay .ranking{
       margin-top:8px; font-size:clamp(18px,3.5vh,26px); color:#222;
       text-shadow:
@@ -1281,11 +1339,13 @@ function ensureRankOverlay() {
         -2px  2px 0 #fff, 2px  2px 0 #fff;
       font-weight:800; letter-spacing:1px;
     }
+
     #rankOverlay .finalizar{
       margin-top:5vh; color:#ffffff; font-size:clamp(18px,3.5vh,28px); font-weight:700;
       text-shadow:-2px -2px 0 #000,2px -2px 0 #000,-2px 2px 0 #000,2px 2px 0 #000;
       user-select:none;
     }
+
     #rankOverlay .hand{
       position:absolute; bottom:6vh; width:min(20vw,120px); image-rendering:pixelated;
       animation:hand-tap 1.15s ease-in-out infinite; transform-origin:10% 10%;
@@ -1300,20 +1360,29 @@ function ensureRankOverlay() {
   rankOverlay.innerHTML = `
     <div class="wrap" id="rankWrap">
       <div class="title">Game Over</div>
+
       <div class="panel">
-        ${UI_ASSETS.heroBird ? `<img class="bird" src="${UI_ASSETS.heroBird}" alt="bird">` : ''}
-        <div>
-          <div id="rankScore" class="score">0</div>
-          <div id="rankPos" class="ranking">Ranking --</div>
+        <div class="panel-inner">
+          ${UI_ASSETS.heroBird ? `<img class="bird" src="${UI_ASSETS.heroBird}" alt="bird">` : ''}
+          <div>
+            <div id="rankScore" class="score">0</div>
+            <div id="rankPos" class="ranking">Ranking --</div>
+          </div>
         </div>
       </div>
+
       <div class="finalizar">Finalizar</div>
       ${UI_ASSETS.hand ? `<img class="hand" src="${UI_ASSETS.hand}" alt="tap">` : ''}
     </div>
   `;
   document.body.appendChild(rankOverlay);
 
+  // clicar em qualquer lugar fecha e volta
   rankOverlay.addEventListener('click', finalizeAndReset);
+
+  // impedir que clique dentro do painel feche acidentalmente (se quiser manter o comportamento atual, remova este trecho)
+  const panel = rankOverlay.querySelector('.panel');
+  panel?.addEventListener('click', (e) => e.stopPropagation());
 }
 function showRankOverlay(finalScore, rankPos) {
   const sc = document.getElementById('rankScore');
