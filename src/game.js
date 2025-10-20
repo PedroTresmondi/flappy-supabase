@@ -24,6 +24,9 @@ const CONFIG_SLUG = localStorage.getItem('flappy:configSlug') || 'default';
 const BASE_W = 360, BASE_H = 640;
 const TARGET_W = 1080, TARGET_H = 1920;
 
+let saveOnce = false;
+let savePromise = null;
+
 // assets padrão (devem existir em public/assets/img/)
 const DEFAULT_ASSETS = {
   birdFrames: [
@@ -1054,7 +1057,7 @@ async function salvarScoreNoSupabase(pontos) {
     player_name: player.nome || 'Anônimo',
     score: Number(pontos),
     played_at: new Date().toISOString(),
-    prize_group: determinePrizeGroup?.(Number(pontos)) || null, // se você tiver essa função
+    prize_group: determinePrizeGroup(Number(pontos)) || null,
     meta: {
       startedAt: runStartISO,
       durationMs: Math.max(0, Math.round(performance.now() - runStartPerf)),
@@ -1067,8 +1070,15 @@ async function salvarScoreNoSupabase(pontos) {
   const { error } = await supabase.from(SUPABASE_SCORES_TABLE).insert([payload]);
   if (error) throw error;
 
-  // >>> invalida o cache do TOP10 (vai forçar refresh no próximo open)
+  // marque score recente + invalide cache
+  top10Hot = {
+    ts: Date.now(),
+    score: Number(pontos),
+    name: player.nome || 'Anônimo',
+    played_at: payload.played_at
+  };
   invalidateTop10Cache();
+
 }
 
 
@@ -1175,9 +1185,14 @@ function hideStartOverlay() { startOverlay?.classList.remove('show'); uiLocked =
 
 // ---- TOP10 CACHE ----
 const TOP10_CACHE_KEY = `flappy:top10:${CONFIG_SLUG}`;
-const TOP10_TTL_MS = 2 * 60 * 1000; // 2 minutos
+const TOP10_TTL_MS = 2 * 60 * 1000;      // 2 min
+const TOP10_HOT_MS = 15 * 1000;          // janela "quente" após salvar
+const TOP10_RECHECK_DELAY_MS = 3000;     // 3s para revalidar
 
 let top10CacheMem = null;
+
+// guarda último score salvo (para heurística de revalidação)
+let top10Hot = { ts: 0, score: 0, name: '', played_at: '' };
 
 function top10ComputeSig(rows) {
   return (rows || [])
@@ -1185,22 +1200,16 @@ function top10ComputeSig(rows) {
     .join('#');
 }
 function readTop10Cache() {
-  // tenta memória
-  if (top10CacheMem && (Date.now() - (top10CacheMem.ts || 0)) < TOP10_TTL_MS) {
-    return top10CacheMem;
-  }
-  // tenta localStorage
+  if (top10CacheMem && (Date.now() - (top10CacheMem.ts || 0)) < TOP10_TTL_MS) return top10CacheMem;
   try {
     const raw = localStorage.getItem(TOP10_CACHE_KEY);
     if (!raw) return null;
     const obj = JSON.parse(raw);
     if (!obj || !obj.rows) return null;
-    if ((Date.now() - (obj.ts || 0)) > TOP10_TTL_MS) return null; // expirado
+    if ((Date.now() - (obj.ts || 0)) > TOP10_TTL_MS) return null;
     top10CacheMem = obj;
     return obj;
-  } catch {
-    return null;
-  }
+  } catch { return null; }
 }
 function writeTop10Cache(rows) {
   const obj = { ts: Date.now(), rows: rows || [], sig: top10ComputeSig(rows) };
@@ -1211,6 +1220,11 @@ function writeTop10Cache(rows) {
 function invalidateTop10Cache() {
   top10CacheMem = null;
   try { localStorage.removeItem(TOP10_CACHE_KEY); } catch { }
+}
+function top10IsHot() { return (Date.now() - (top10Hot.ts || 0)) < TOP10_HOT_MS; }
+function top10MinScore(rows) {
+  if (!rows?.length) return -Infinity;
+  return Number(rows[rows.length - 1]?.score ?? -Infinity);
 }
 
 
@@ -1332,31 +1346,56 @@ async function showScoresOverlay() {
   const list = document.getElementById('scoresList');
   if (!list) return;
 
-  // 1) tenta usar cache
+  // 1) Renderiza cache (se houver) para mostrar algo imediato
   const cache = readTop10Cache();
-  if (cache && cache.rows?.length) {
+  if (cache?.rows?.length) {
     renderTop10ListTo(list, cache.rows);
-
-    // cache ainda fresco? nem consulta o servidor
-    if ((Date.now() - cache.ts) < TOP10_TTL_MS) return;
   } else {
     list.innerHTML = `<div class="name" style="opacity:.8;padding:10px 0">Carregando…</div>`;
   }
 
-  // 2) busca do servidor; se falhar, mantém cache antigo
+  // 2) Decide se precisamos ignorar TTL (acabou de salvar um score?)
+  const forceNetwork = top10IsHot();
+
+  // 3) Busca do servidor (sempre quando estiver "quente"; caso contrário, só se não houver cache ou cache expirou)
+  const shouldFetch =
+    forceNetwork ||
+    !cache ||
+    (Date.now() - (cache.ts || 0)) > TOP10_TTL_MS;
+
+  if (!shouldFetch && cache?.rows?.length) return; // cache fresco e não "quente"
+
   try {
-    const rows = await fetchTop10FromSupabase();
-    writeTop10Cache(rows);
-    renderTop10ListTo(list, rows);
+    const rows1 = await fetchTop10FromSupabase();
+    const sig1 = top10ComputeSig(rows1);
+    const prevSig = cache?.sig;
+
+    writeTop10Cache(rows1);
+    if (!prevSig || prevSig !== sig1) {
+      renderTop10ListTo(list, rows1);
+    }
+
+    // 4) Janela quente: se meu score deveria entrar no top10 mas ainda não apareceu, revalida 1x após 3s
+    if (forceNetwork && (rows1.length < 10 || top10Hot.score > top10MinScore(rows1))) {
+      setTimeout(async () => {
+        try {
+          const rows2 = await fetchTop10FromSupabase();
+          const sig2 = top10ComputeSig(rows2);
+          if (sig2 !== sig1) {
+            writeTop10Cache(rows2);
+            renderTop10ListTo(list, rows2);
+          }
+        } catch { }
+      }, TOP10_RECHECK_DELAY_MS);
+    }
   } catch (e) {
-    console.warn('[Top10] erro ao buscar, usando cache se houver:', e);
-    if (cache?.rows?.length) {
-      renderTop10ListTo(list, cache.rows);
-    } else {
+    console.warn('[Top10] erro ao buscar, mantendo cache se houver:', e);
+    if (!cache?.rows?.length) {
       list.innerHTML = `<div class="name" style="opacity:.85;padding:12px 2px">Sem scores no servidor ainda.</div>`;
     }
   }
 }
+
 
 
 function hideScoresOverlay() {
@@ -1507,7 +1546,7 @@ function showRankOverlay(finalScore, rankPos) {
   if (rp) rp.textContent = `Ranking ${rankPos != null ? String(rankPos).padStart(2, '0') : '--'}`;
 
   const prize = getPrizeForScore(finalScore);
-  if (pr) pr.textContent = prize ? (prize.name || 'Prêmio') : '';  
+  if (pr) pr.textContent = prize ? (prize.name || 'Prêmio') : '';
 
   rankOverlay?.classList.add('show');
   uiLocked = true;
@@ -1517,13 +1556,30 @@ function hideRankOverlay() { rankOverlay?.classList.remove('show'); uiLocked = f
 
 // ================== GAME OVER FLOW ==================
 async function handleGameOverSave() {
-  try { await salvarScoreNoSupabase(score); }
-  catch (e) { console.warn('[Supabase] falha ao salvar:', e); }
+  // garante que só roda uma vez por run
+  if (saveOnce) return savePromise;
+  saveOnce = true;
 
-  let pos = null;
-  try { pos = await fetchRankForScore(score); } catch { }
-  showRankOverlay(score, pos);
+  savePromise = (async () => {
+    let savedOk = false;
+
+    try {
+      await salvarScoreNoSupabase(score);
+      savedOk = true;
+      try { sessionStorage.clear(); } catch { }
+    } catch (e) {
+      console.warn('[Supabase] falha ao salvar:', e);
+    }
+
+    let pos = null;
+    try { pos = await fetchRankForScore(score); } catch { }
+
+    showRankOverlay(score, pos);
+  })();
+
+  return savePromise;
 }
+
 
 // ================== RESET/FINALIZAR ==================
 function finalizeAndReset() {
@@ -1572,6 +1628,10 @@ function extraSpeedStepPxPerFrame() {
   return Math.min(maxExtra, steps * addStep);
 }
 
+
+function determinePrizeGroup(points) {
+  return groupNameForScore(Number(points) || 0, cfg.prizes);
+}
 
 
 // ================== HELPERS ==================
