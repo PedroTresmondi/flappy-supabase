@@ -86,8 +86,18 @@ const DEFAULT_CONFIG = {
   difficulty: {
     rampEnabled: false, speedPerScore: 0.05, minGapPercent: 18, gapStepPerScore: 0.2,
     timeRampEnabled: true, timeStartDelayMs: 0,
+    timeSpeedPerSec: 0.03, timeMaxExtraSpeed: 5, timeGapStepPerSec: 0.02,
+    stepEveryMs: 2000,
+    stepAddPxPerFrame: 0.30,
+    stepMaxExtraPxPerFrame: 6,
     timeSpeedPerSec: 0.03, timeMaxExtraSpeed: 5, timeGapStepPerSec: 0.02
+
   },
+  prizes: [
+    { min: 1, max: 10, name: 'Grupo A' },
+    { min: 10, max: 15, name: 'Grupo B' },
+    { min: 15, max: 25, name: 'Grupo C' },
+  ],
   spawn: { intervalMs: 1500 },
   scoring: { pointsPerPipe: 0.5 },
   ui: {
@@ -204,7 +214,7 @@ function resetRunState() {
   activeTimeMs = 0; timeRampStartTs = 0; lastFlapTs = -1;
 
   bgScrollX = 0;
-  bgFrozen = false; 
+  bgFrozen = false;
 
   // reset death
   dying = false;
@@ -753,15 +763,48 @@ function drawBackground(dtMs) {
 // ================== SPAWNER ==================
 function startSpawning() { stopSpawning(); scheduleNextSpawn(true); }
 function currentScrollSpeedAbsPerSec() {
-  const base = Math.abs(cfg.pipes.scrollSpeed);
+  let base = Math.abs(cfg.pipes.scrollSpeed);
+
+  // extra por steps configuráveis
+  base += extraSpeedStepPxPerFrame();
+
+  // (opcional) rampa por score, se habilitada
   const scoreExtra = cfg.difficulty?.rampEnabled ? (cfg.difficulty.speedPerScore || 0) * score : 0;
-  const sec = activeTimeMs / 1000;
-  const timeExtra = cfg.difficulty?.timeRampEnabled
-    ? Math.min(cfg.difficulty.timeMaxExtraSpeed ?? Infinity, (cfg.difficulty.timeSpeedPerSec || 0) * sec)
-    : 0;
-  const pxPerFrame = base + scoreExtra + timeExtra;
-  return pxPerFrame * 60;
+  base += scoreExtra;
+
+  // (opcional) rampa contínua antiga por tempo, se habilitada
+  if (cfg.difficulty?.timeRampEnabled) {
+    const sec = activeTimeMs / 1000;
+    const timeExtra = Math.min(
+      cfg.difficulty.timeMaxExtraSpeed ?? Infinity,
+      (cfg.difficulty.timeSpeedPerSec || 0) * sec
+    );
+    base += timeExtra;
+  }
+
+  return base * 60; // px/seg
 }
+
+function currentScrollSpeed() {
+  let base = Math.abs(cfg.pipes.scrollSpeed);
+  base += extraSpeedStepPxPerFrame();
+
+  const scoreExtra = cfg.difficulty?.rampEnabled ? (cfg.difficulty.speedPerScore || 0) * score : 0;
+  base += scoreExtra;
+
+  if (cfg.difficulty?.timeRampEnabled) {
+    const sec = activeTimeMs / 1000;
+    const timeExtra = Math.min(
+      cfg.difficulty.timeMaxExtraSpeed ?? Infinity,
+      (cfg.difficulty.timeSpeedPerSec || 0) * sec
+    );
+    base += timeExtra;
+  }
+
+  return -base; // move canos para a esquerda
+}
+
+
 function scheduleNextSpawn(spawnNow = false) {
   if (spawnNow) placePipes();
 
@@ -777,15 +820,7 @@ function scheduleNextSpawn(spawnNow = false) {
 }
 
 // ================== HUD / TILT ==================
-function currentScrollSpeed() {
-  const base = Math.abs(cfg.pipes.scrollSpeed);
-  const scoreExtra = cfg.difficulty?.rampEnabled ? (cfg.difficulty.speedPerScore || 0) * score : 0;
-  const sec = activeTimeMs / 1000;
-  const timeExtra = cfg.difficulty?.timeRampEnabled
-    ? Math.min(cfg.difficulty.timeMaxExtraSpeed ?? Infinity, (cfg.difficulty.timeSpeedPerSec || 0) * sec)
-    : 0;
-  return -(base + scoreExtra + timeExtra);
-}
+
 function updateBirdTilt(tFactor) {
   const tcfg = cfg.bird.tilt;
   if (!tcfg?.enabled) { birdTiltDeg = 0; return; }
@@ -1015,10 +1050,7 @@ async function salvarScoreNoSupabase(pontos) {
   const payload = {
     run_id: String(runId),
     player_name: player.nome || 'Anônimo',
-    email: 'anon@demo.com',
-    telefone: '',
     score: Number(pontos),
-    win: false,
     played_at: new Date().toISOString(),
     meta: {
       startedAt: runStartISO,
@@ -1029,9 +1061,10 @@ async function salvarScoreNoSupabase(pontos) {
     },
   };
 
-  const { error } = await supabase.from(SUPABASE_SCORES_TABLE).insert([payload]);
+  const { error } = await supabase.from('scores').insert([payload]);
   if (error) throw error;
 }
+
 
 async function fetchRankForScore(finalScore) {
   if (!supabase) return null;
@@ -1290,6 +1323,15 @@ function ensureRankOverlay() {
     #rankOverlay.show{display:block}
     #rankOverlay .wrap{position:absolute;inset:0;display:grid;place-items:start center;pointer-events:auto}
 
+#rankOverlay .prize{
+  margin-top:2px;
+  font-size:clamp(16px,3.2vh,24px);
+  color:#222;
+  text-shadow:-2px -2px 0 #fff, 2px -2px 0 #fff, -2px 2px 0 #fff, 2px 2px 0 #fff;
+  font-weight:800; letter-spacing:1px;
+}
+
+
     #rankOverlay .title{
       margin-top:4vh;color:#ffffff; font-weight:900; letter-spacing:1px;
       font-size:clamp(26px,5.5vh,44px);
@@ -1362,14 +1404,15 @@ function ensureRankOverlay() {
       <div class="title">Game Over</div>
 
       <div class="panel">
-        <div class="panel-inner">
-          ${UI_ASSETS.heroBird ? `<img class="bird" src="${UI_ASSETS.heroBird}" alt="bird">` : ''}
-          <div>
-            <div id="rankScore" class="score">0</div>
-            <div id="rankPos" class="ranking">Ranking --</div>
-          </div>
-        </div>
-      </div>
+  <div class="panel-inner">
+    ${UI_ASSETS.heroBird ? `<img class="bird" src="${UI_ASSETS.heroBird}" alt="bird">` : ''}
+    <div>
+      <div id="rankScore" class="score">0</div>
+      <div id="rankPos" class="ranking">Ranking --</div>
+      <div id="rankPrize" class="prize"></div> <!-- NOVO -->
+    </div>
+  </div>
+</div>
 
       <div class="finalizar">Finalizar</div>
       ${UI_ASSETS.hand ? `<img class="hand" src="${UI_ASSETS.hand}" alt="tap">` : ''}
@@ -1387,11 +1430,17 @@ function ensureRankOverlay() {
 function showRankOverlay(finalScore, rankPos) {
   const sc = document.getElementById('rankScore');
   const rp = document.getElementById('rankPos');
+  const pr = document.getElementById('rankPrize');
   if (sc) sc.textContent = String(finalScore | 0);
   if (rp) rp.textContent = `Ranking ${rankPos != null ? String(rankPos).padStart(2, '0') : '--'}`;
+
+  const prize = getPrizeForScore(finalScore);
+  if (pr) pr.textContent = prize ? (prize.name || 'Prêmio') : '';  
+
   rankOverlay?.classList.add('show');
   uiLocked = true;
 }
+
 function hideRankOverlay() { rankOverlay?.classList.remove('show'); uiLocked = false; }
 
 // ================== GAME OVER FLOW ==================
@@ -1423,8 +1472,35 @@ function finalizeAndReset() {
 
   hideRankOverlay();
   showStartOverlay();
-  startBgLoop(); // volta a animar BG nos menus
+  startBgLoop();
 }
+
+function getPrizeForScore(score) {
+  const arr = Array.isArray(cfg.prizes) ? cfg.prizes : [];
+  const s = Number(score) || 0;
+
+  let found = arr.find(g => s >= Number(g.min ?? -Infinity) && s < Number(g.max ?? Infinity));
+
+  if (!found && arr.length) {
+    const last = arr[arr.length - 1];
+    if (s >= Number(last.min ?? -Infinity) && s <= Number(last.max ?? Infinity)) {
+      found = last;
+    }
+  }
+  return found || null;
+}
+
+
+function extraSpeedStepPxPerFrame() {
+  const stepMs = Math.max(1, cfg.difficulty?.stepEveryMs ?? 2000);
+  const addStep = Number(cfg.difficulty?.stepAddPxPerFrame ?? 0.30);
+  const maxExtra = Number(cfg.difficulty?.stepMaxExtraPxPerFrame ?? 6);
+
+  const steps = Math.floor(activeTimeMs / stepMs);
+  return Math.min(maxExtra, steps * addStep);
+}
+
+
 
 // ================== HELPERS ==================
 async function withUiLock(promiseLike) { uiLocked = true; try { await promiseLike; } finally { uiLocked = false; } }
