@@ -284,6 +284,8 @@ async function loadConfigSanitized() {
   }
 
   merged.assets = sanitizeAssets(merged.assets);
+  if (!Array.isArray(merged.prizes)) merged.prizes = [];
+
   return merged;
 }
 
@@ -1047,11 +1049,19 @@ async function salvarScoreNoSupabase(pontos) {
   if (!supabase) return;
 
   const player = getLocalPlayer();
+
+  // >>> NOVO: descobre o nome do grupo conforme as faixas atuais da config
+  const prizeGroup = groupNameForScore(Number(pontos || 0), cfg.prizes || []);
+
   const payload = {
     run_id: String(runId),
     player_name: player.nome || 'Anônimo',
     score: Number(pontos),
     played_at: new Date().toISOString(),
+
+    // >>> NOVO: salva o nome do grupo na tabela
+    prize_group: prizeGroup, // (texto) ex.: "Grupo A", "Camiseta", etc.
+
     meta: {
       startedAt: runStartISO,
       durationMs: Math.max(0, Math.round(performance.now() - runStartPerf)),
@@ -1064,6 +1074,7 @@ async function salvarScoreNoSupabase(pontos) {
   const { error } = await supabase.from('scores').insert([payload]);
   if (error) throw error;
 }
+
 
 
 async function fetchRankForScore(finalScore) {
@@ -1516,4 +1527,31 @@ function okImg(im) { return !!(im && im.complete && im.naturalWidth > 0); }
 function tryDrawImage(im, x, y, w, h) {
   if (okImg(im)) ctx.drawImage(im, x, y, w, h);
   else { ctx.save(); ctx.fillStyle = '#2dd4bf33'; ctx.fillRect(x, y, w, h); ctx.strokeStyle = '#ef4444'; ctx.strokeRect(x, y, w, h); ctx.restore(); }
+}
+
+// ------------ PRIZES (grupos por faixa de pontuação) ------------
+function normalizePrizes(prizes) {
+  if (!Array.isArray(prizes)) return [];
+  const clean = prizes
+    .map(g => ({
+      min: Number(g?.min ?? 0),
+      max: Number(g?.max ?? 0),
+      name: String(g?.name ?? '').trim() || 'Grupo',
+    }))
+    .filter(g => Number.isFinite(g.min) && Number.isFinite(g.max) && g.max >= g.min);
+  clean.sort((a, b) => (a.min - b.min) || (a.max - b.max));
+  return clean;
+}
+
+// [min, max) e o último grupo é [min, max] (inclusivo no max)
+function _inRange(score, g, isLast) {
+  return isLast ? (score >= g.min && score <= g.max) : (score >= g.min && score < g.max);
+}
+
+function groupNameForScore(score, prizes) {
+  const arr = normalizePrizes(prizes);
+  for (let i = 0; i < arr.length; i++) {
+    if (_inRange(score, arr[i], i === arr.length - 1)) return arr[i].name;
+  }
+  return null;
 }

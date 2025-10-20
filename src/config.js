@@ -1,6 +1,4 @@
-// src/config.js — Mock login (master/client) + RBAC + Supabase I/O
-"use strict";
-
+// src/config.js — Mock login (master/client) + RBAC + Supabase I/O + Prizes + Painéis de Ranking
 import { supabase } from './supabase.js';
 
 const SUPABASE_CONFIG_TABLE = 'flappy_config';
@@ -11,116 +9,182 @@ const DEFAULT_SLUG = 'default';
 
 // Usuários mockados
 const MOCK_CREDENTIALS = {
-    master: { email: 'master@local', password: '123456' },
-    client: { email: 'client@local', password: '123456' },
+  master: { email: 'master@local', password: '123456' },
+  client: { email: 'client@local', password: '123456' },
 };
 
 let state = {};
 let role = 'client'; // 'master' | 'client'
+let lastScoresCache = [];
 
 // ------------------------------ DOM helpers -----------------------------------
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => Array.from(document.querySelectorAll(s));
 
 function flash(msg, error = false) {
-    const el = $('#status'); if (!el) return;
-    el.innerHTML = `<span class="${error ? 'err' : 'ok'}">${msg}</span>`;
-    setTimeout(() => (el.textContent = ''), 2500);
+  const el = $('#status'); if (!el) return;
+  el.innerHTML = `<span class="${error ? 'err' : 'ok'}">${msg}</span>`;
+  setTimeout(() => (el.textContent = ''), 2500);
 }
 function updatePreview() {
-    const pre = $('#jsonPreview'); if (!pre) return;
-    pre.textContent = JSON.stringify(state, null, 2);
+  const pre = $('#jsonPreview'); if (!pre) return;
+  pre.textContent = JSON.stringify(state, null, 2);
 }
 function getSlug() { return localStorage.getItem(SLUG_KEY) || DEFAULT_SLUG; }
 function setSlug(slug) { localStorage.setItem(SLUG_KEY, slug || DEFAULT_SLUG); }
 
 function setRole(newRole) {
-    role = (newRole === 'master') ? 'master' : 'client';
-    document.documentElement.setAttribute('data-role', role);
-    applyRoleGating();
-    const who = $('#whoami');
-    if (who) who.textContent = `${role === 'master' ? 'Master' : 'Client'} (mock)`;
+  role = (newRole === 'master') ? 'master' : 'client';
+  document.documentElement.setAttribute('data-role', role);
+  applyRoleGating();
+  const who = $('#whoami');
+  if (who) who.textContent = `${role === 'master' ? 'Master' : 'Client'} (mock)`;
 }
 function applyRoleGating() {
-    const isClient = role !== 'master';
-    // desabilita tudo…
-    $$('#appView input, #appView select, #appView textarea, #appView button').forEach(el => {
-        el.disabled = isClient;
-        el.classList.toggle('client-readonly', isClient);
-    });
+  const isClient = role !== 'master';
+  // desabilita tudo…
+  $$('#appView input, #appView select, #appView textarea, #appView button').forEach(el => {
+    el.disabled = isClient;
+    el.classList.toggle('client-readonly', isClient);
+  });
 
-    // …e reabilita Difficulty e Prizes para o cliente
-    $$(
-        'fieldset[data-scope="difficulty"] input,' +
-        'fieldset[data-scope="difficulty"] select,' +
-        'fieldset[data-scope="difficulty"] textarea,' +
-        'fieldset[data-scope="difficulty"] button,' +
-        'fieldset[data-scope="prizes"] input,' +
-        'fieldset[data-scope="prizes"] button'
-    ).forEach(el => {
-        el.disabled = false;
-        el.classList.remove('client-readonly');
-    });
+  // …e reabilita Difficulty e Prizes para o cliente
+  $$('fieldset[data-scope="difficulty"] input, fieldset[data-scope="difficulty"] select, fieldset[data-scope="difficulty"] textarea, fieldset[data-scope="difficulty"] button, fieldset[data-scope="prizes"] input, fieldset[data-scope="prizes"] button').forEach(el => {
+    el.disabled = false;
+    el.classList.remove('client-readonly');
+  });
 
-    // botões principais sempre ativos
-    $('#loadSupabase').disabled = false;
-    $('#saveSupabase').disabled = false;
+  // botões principais sempre ativos
+  const loadBtn = $('#loadSupabase');
+  const saveBtn = $('#saveSupabase');
+  if (loadBtn) loadBtn.disabled = false;
+  if (saveBtn) saveBtn.disabled = false;
 
-    // slug: client não altera
-    const slugInput = $('#cfgSlug');
-    if (slugInput) slugInput.disabled = isClient;
+  // slug: client não altera
+  const slugInput = $('#cfgSlug');
+  if (slugInput) slugInput.disabled = isClient;
 }
 
-// --------------------------- Prizes (UI + helpers) -----------------------------
+function showAuth() {
+  $('#authView').style.display = 'block';
+  $('#appView').style.display = 'none';
+  $('#btnLogout').style.display = 'none';
+}
+function showApp() {
+  $('#authView').style.display = 'none';
+  $('#appView').style.display = '';
+  $('#btnLogout').style.display = '';
+  applyRoleGating();
+}
+
+// ---------------------------- Supabase I/O ------------------------------------
+async function loadFromSupabase(slug) {
+  const { data, error } = await supabase
+    .from(SUPABASE_CONFIG_TABLE)
+    .select('data')
+    .eq('slug', String(slug || DEFAULT_SLUG))
+    .maybeSingle();
+  if (error) throw error;
+  return data?.data || null;
+}
+async function saveToSupabase(slug, cfg) {
+  const payload = {
+    slug: String(slug || DEFAULT_SLUG),
+    data: cfg || {},
+    updated_at: new Date().toISOString(),
+  };
+  const { data, error } = await supabase
+    .from(SUPABASE_CONFIG_TABLE)
+    .upsert(payload, { onConflict: 'slug' })
+    .select('slug, updated_at');
+  if (error) throw error;
+  return Array.isArray(data) ? data[0] : data;
+}
+
+// client salva Difficulty + Prizes (apenas campos editáveis)
+async function saveClientEditable(slug, patch) {
+  const remote = await loadFromSupabase(slug) || {};
+  const merged = {
+    ...remote,
+    difficulty: { ...(remote.difficulty || {}), ...((patch && patch.difficulty) || {}) },
+    prizes: Array.isArray(patch?.prizes) ? patch.prizes : (remote.prizes || []),
+  };
+  return saveToSupabase(slug, merged);
+}
+
+// --------------------------- Scores (painel) ----------------------------------
+async function loadScores() {
+  const list = $('#scoresList');
+  if (list) list.innerHTML = `<div class="hint">Carregando…</div>`;
+  const groupBox = $('#scoresByGroup');
+  if (groupBox) groupBox.innerHTML = `<div class="hint">Carregando…</div>`;
+
+  try {
+    const { data, error } = await supabase
+      .from(SUPABASE_SCORES_TABLE)
+      .select('player_name, score, played_at, prize_group') // inclui prize_group salvo
+      .order('score', { ascending: false })
+      .limit(200);
+    if (error) throw error;
+
+    lastScoresCache = Array.isArray(data) ? data : [];
+    renderScoresOverall(lastScoresCache);
+    renderScoresByGroups(lastScoresCache);
+  } catch (e) {
+    if (list) list.innerHTML = `<div class="hint" style="color:#fca5a5">Falha ao carregar scores</div>`;
+    if (groupBox) groupBox.innerHTML = `<div class="hint" style="color:#fca5a5">Falha ao carregar grupos</div>`;
+  }
+}
+
+// --------------------------- Prizes / Groups ----------------------------------
 function ensurePrizeArray() {
-    if (!Array.isArray(state.prizes)) {
-        state.prizes = [
-            { min: 1, max: 10, name: 'Grupo A' },
-            { min: 10, max: 15, name: 'Grupo B' },
-            { min: 15, max: 25, name: 'Grupo C' },
-        ];
-    }
+  if (!Array.isArray(state.prizes)) {
+    state.prizes = [
+      { min: 1, max: 10, name: 'Grupo A' },
+      { min: 10, max: 15, name: 'Grupo B' },
+      { min: 15, max: 25, name: 'Grupo C' },
+    ];
+  }
 }
-function normalizePrizes(arr) {
-    if (!Array.isArray(arr)) return [];
-    // limpa valores, garante números e ordena por min crescente
-    const clean = arr
-        .map(g => ({
-            min: (g.min ?? 0) * 1,
-            max: (g.max ?? 0) * 1,
-            name: String(g.name ?? '').trim() || 'Grupo'
-        }))
-        .filter(g => Number.isFinite(g.min) && Number.isFinite(g.max) && g.max >= g.min);
-    clean.sort((a, b) => (a.min - b.min) || (a.max - b.max));
-    return clean;
+function normalizePrizes(prizes) {
+  if (!Array.isArray(prizes)) return [];
+  const clean = prizes
+    .map(g => ({
+      min: Number(g?.min ?? 0),
+      max: Number(g?.max ?? 0),
+      name: String(g?.name ?? '').trim() || 'Grupo',
+    }))
+    .filter(g => Number.isFinite(g.min) && Number.isFinite(g.max) && g.max >= g.min);
+  clean.sort((a, b) => (a.min - b.min) || (a.max - b.max));
+  return clean;
 }
-function inRange(score, g, isLast) {
-    // regra: [min, max) e para o último grupo considerar max inclusivo
-    if (isLast) return score >= g.min && score <= g.max;
-    return score >= g.min && score < g.max;
+// [min, max) e o último grupo é [min, max] (inclusivo no max)
+function _inRange(score, g, isLast) {
+  return isLast ? (score >= g.min && score <= g.max) : (score >= g.min && score < g.max);
 }
 function whichPrizeName(score, prizes) {
-    const arr = normalizePrizes(prizes);
-    if (!arr.length) return null;
-    for (let i = 0; i < arr.length; i++) {
-        if (inRange(score, arr[i], i === arr.length - 1)) return arr[i].name;
-    }
-    return null;
+  const arr = normalizePrizes(prizes);
+  for (let i = 0; i < arr.length; i++) {
+    if (_inRange(score, arr[i], i === arr.length - 1)) return arr[i].name;
+  }
+  return null;
 }
 
 function renderPrizeGroups() {
-    ensurePrizeArray();
-    const wrap = $('#prizeGroups');
-    if (!wrap) return;
-    wrap.innerHTML = '';
+  ensurePrizeArray();
+  const wrap = $('#prizeGroups');
+  if (!wrap) return;
+  wrap.innerHTML = '';
 
-    state.prizes.forEach((g, idx) => {
-        const row = document.createElement('div');
-        row.className = 'prizeRow';
-        row.dataset.idx = String(idx);
-        Object.assign(row.style, { display: 'flex', gap: '8px', alignItems: 'center' });
+  state.prizes.forEach((g, idx) => {
+    const row = document.createElement('div');
+    row.className = 'prizeRow';
+    row.dataset.idx = String(idx);
+    row.style.display = 'flex';
+    row.style.gap = '8px';
+    row.style.alignItems = 'center';
 
-        row.innerHTML = `
+    row.innerHTML = `
       <span class="hint">#${idx + 1}</span>
       <input type="number" class="input-min"  placeholder="min" step="1"  style="width:90px"  value="${g.min ?? ''}">
       <span class="hint">até</span>
@@ -131,381 +195,320 @@ function renderPrizeGroups() {
       <button class="btn btnDn"  type="button" title="Descer">▼</button>
     `;
 
-        // listeners
-        row.querySelector('.input-min').addEventListener('input', e => {
-            const v = e.target.value === '' ? null : Number(e.target.value);
-            state.prizes[idx].min = v;
-            updatePreview();
-        });
-        row.querySelector('.input-max').addEventListener('input', e => {
-            const v = e.target.value === '' ? null : Number(e.target.value);
-            state.prizes[idx].max = v;
-            updatePreview();
-        });
-        row.querySelector('.input-name').addEventListener('input', e => {
-            state.prizes[idx].name = String(e.target.value || '');
-            updatePreview();
-        });
-        row.querySelector('.btnDel').addEventListener('click', () => {
-            state.prizes.splice(idx, 1);
-            renderPrizeGroups(); updatePreview();
-        });
-        row.querySelector('.btnUp').addEventListener('click', () => {
-            if (idx <= 0) return;
-            const [it] = state.prizes.splice(idx, 1);
-            state.prizes.splice(idx - 1, 0, it);
-            renderPrizeGroups(); updatePreview();
-        });
-        row.querySelector('.btnDn').addEventListener('click', () => {
-            if (idx >= state.prizes.length - 1) return;
-            const [it] = state.prizes.splice(idx, 1);
-            state.prizes.splice(idx + 1, 0, it);
-            renderPrizeGroups(); updatePreview();
-        });
-
-        wrap.appendChild(row);
+    // listeners
+    row.querySelector('.input-min').addEventListener('input', e => {
+      const v = e.target.value === '' ? null : Number(e.target.value);
+      state.prizes[idx].min = v;
+      updatePreview();
+      // re-render painéis usando cache
+      if (lastScoresCache?.length) { renderScoresByGroups(lastScoresCache); }
+    });
+    row.querySelector('.input-max').addEventListener('input', e => {
+      const v = e.target.value === '' ? null : Number(e.target.value);
+      state.prizes[idx].max = v;
+      updatePreview();
+      if (lastScoresCache?.length) { renderScoresByGroups(lastScoresCache); }
+    });
+    row.querySelector('.input-name').addEventListener('input', e => {
+      state.prizes[idx].name = String(e.target.value || '');
+      updatePreview();
+      if (lastScoresCache?.length) { renderScoresByGroups(lastScoresCache); }
+    });
+    row.querySelector('.btnDel').addEventListener('click', () => {
+      state.prizes.splice(idx, 1);
+      renderPrizeGroups(); updatePreview();
+      if (lastScoresCache?.length) { renderScoresByGroups(lastScoresCache); }
+    });
+    row.querySelector('.btnUp').addEventListener('click', () => {
+      if (idx <= 0) return;
+      const [it] = state.prizes.splice(idx, 1);
+      state.prizes.splice(idx - 1, 0, it);
+      renderPrizeGroups(); updatePreview();
+      if (lastScoresCache?.length) { renderScoresByGroups(lastScoresCache); }
+    });
+    row.querySelector('.btnDn').addEventListener('click', () => {
+      if (idx >= state.prizes.length - 1) return;
+      const [it] = state.prizes.splice(idx, 1);
+      state.prizes.splice(idx + 1, 0, it);
+      renderPrizeGroups(); updatePreview();
+      if (lastScoresCache?.length) { renderScoresByGroups(lastScoresCache); }
     });
 
-    // botão "Adicionar"
-    const addBtn = $('#btnAddPrize');
-    if (addBtn && !addBtn.dataset.bound) {
-        addBtn.dataset.bound = '1';
-        addBtn.addEventListener('click', () => {
-            ensurePrizeArray();
-            state.prizes.push({ min: 0, max: 1, name: 'Novo grupo' });
-            renderPrizeGroups(); updatePreview();
-        });
-    }
-}
+    wrap.appendChild(row);
+  });
 
-// ------------------------------ Auth Views ------------------------------------
-function showAuth() {
-    $('#authView').style.display = 'block';
-    $('#appView').style.display = 'none';
-    $('#btnLogout').style.display = 'none';
-}
-function showApp() {
-    $('#authView').style.display = 'none';
-    $('#appView').style.display = '';
-    $('#btnLogout').style.display = '';
-    applyRoleGating();
-}
-
-// ---------------------------- Supabase I/O ------------------------------------
-async function loadFromSupabase(slug) {
-    const { data, error } = await supabase
-        .from(SUPABASE_CONFIG_TABLE)
-        .select('data')
-        .eq('slug', String(slug || DEFAULT_SLUG))
-        .maybeSingle();
-    if (error) throw error;
-    return data?.data || null;
-}
-async function saveToSupabase(slug, cfg) {
-    const payload = {
-        slug: String(slug || DEFAULT_SLUG),
-        data: cfg || {},
-        updated_at: new Date().toISOString(),
-    };
-    const { data, error } = await supabase
-        .from(SUPABASE_CONFIG_TABLE)
-        .upsert(payload, { onConflict: 'slug' })
-        .select('slug, updated_at');
-    if (error) throw error;
-    return Array.isArray(data) ? data[0] : data;
-}
-
-// client salva SÓ difficulty (compat)
-async function saveDifficultyOnly(slug, diffPartial) {
-    const remote = await loadFromSupabase(slug) || {};
-    const merged = { ...remote, difficulty: { ...(remote.difficulty || {}), ...(diffPartial || {}) } };
-    return saveToSupabase(slug, merged);
-}
-
-// client salva difficulty **e** prizes (novo)
-async function saveDifficultyAndPrizesOnly(slug, diffPartial, prizesArr) {
-    const remote = await loadFromSupabase(slug) || {};
-    const merged = {
-        ...remote,
-        difficulty: { ...(remote.difficulty || {}), ...(diffPartial || {}) },
-        prizes: Array.isArray(prizesArr) ? prizesArr : [],
-    };
-    return saveToSupabase(slug, merged);
-}
-
-// --------------------------- Scores (painel) ----------------------------------
-function renderScoresView(rows) {
-    const host = $('#scoresList');
-    if (!host) return;
-
-    const prizes = normalizePrizes(state.prizes || []);
-    const isGrouped = prizes.length > 0;
-
-    // mapeia por grupo
-    const groups = prizes.map((g, i) => ({
-        label: `${g.name} (${g.min}–${i === prizes.length - 1 ? g.max : g.max - 1})`,
-        min: g.min, max: g.max, isLast: i === prizes.length - 1, items: []
-    }));
-
-    const ungrouped = []; // scores fora de faixa (caso ranges não cubram tudo)
-
-    // distribui
-    rows.forEach(r => {
-        const s = Number(r.score || 0);
-        let placed = false;
-        for (const g of groups) {
-            if (inRange(s, g, g.isLast)) { g.items.push(r); placed = true; break; }
-        }
-        if (!placed) ungrouped.push(r);
+  // botão "Adicionar"
+  const addBtn = $('#btnAddPrize');
+  if (addBtn && !addBtn.dataset.bound) {
+    addBtn.dataset.bound = '1';
+    addBtn.addEventListener('click', () => {
+      ensurePrizeArray();
+      state.prizes.push({ min: 0, max: 1, name: 'Novo grupo' });
+      renderPrizeGroups(); updatePreview();
+      if (lastScoresCache?.length) { renderScoresByGroups(lastScoresCache); }
     });
-
-    // ordena cada grupo desc
-    groups.forEach(g => g.items.sort((a, b) => (b.score || 0) - (a.score || 0)));
-    const overall = rows.slice().sort((a, b) => (b.score || 0) - (a.score || 0));
-
-    // HTML
-    let html = '';
-
-    if (isGrouped) {
-        html += `<h3 style="margin:12px 0 6px">Ranking por grupo</h3>`;
-        groups.forEach(g => {
-            html += `
-        <div class="groupBlock" style="margin:8px 0 12px">
-          <div class="hint" style="margin:2px 0 8px">${g.label}</div>
-          ${g.items.length
-                    ? g.items.map((r, i) => `
-              <div class="scoreItem">
-                <div class="rank">#${i + 1}</div>
-                <div>
-                  <div>${r.player_name || 'Anônimo'}</div>
-                  ${r.played_at ? `<div class="hint">${new Date(r.played_at).toLocaleString()}</div>` : ''}
-                </div>
-                <div class="pts">${r.score ?? 0}</div>
-              </div>
-            `).join('')
-                    : `<div class="hint">Sem jogadores neste grupo.</div>`
-                }
-        </div>
-      `;
-        });
-
-        if (ungrouped.length) {
-            ungrouped.sort((a, b) => (b.score || 0) - (a.score || 0));
-            html += `
-        <div class="groupBlock" style="margin:8px 0 12px">
-          <div class="hint" style="margin:2px 0 8px">Fora de faixa</div>
-          ${ungrouped.map((r, i) => `
-            <div class="scoreItem">
-              <div class="rank">#${i + 1}</div>
-              <div>
-                <div>${r.player_name || 'Anônimo'}</div>
-                ${r.played_at ? `<div class="hint">${new Date(r.played_at).toLocaleString()}</div>` : ''}
-              </div>
-              <div class="pts">${r.score ?? 0}</div>
-            </div>
-          `).join('')}
-        </div>
-      `;
-        }
-    }
-
-    // geral
-    html += `<h3 style="margin:14px 0 6px">Ranking geral</h3>`;
-    html += overall.length
-        ? overall.map((r, i) => `
-        <div class="scoreItem">
-          <div class="rank">#${i + 1}</div>
-          <div>
-            <div>${r.player_name || 'Anônimo'}</div>
-            ${r.played_at ? `<div class="hint">${new Date(r.played_at).toLocaleString()}</div>` : ''}
-            ${isGrouped ? (() => {
-                const n = whichPrizeName(Number(r.score || 0), prizes);
-                return n ? `<div class="hint">Grupo: ${n}</div>` : '';
-            })() : ''
-            }
-          </div>
-          <div class="pts">${r.score ?? 0}</div>
-        </div>
-      `).join('')
-        : `<div class="hint">Sem scores ainda.</div>`;
-
-    host.innerHTML = html;
-}
-
-async function loadScores() {
-    const list = $('#scoresList');
-    if (list) list.innerHTML = `<div class="hint">Carregando…</div>`;
-    try {
-        const { data, error } = await supabase
-            .from(SUPABASE_SCORES_TABLE)
-            .select('player_name, score, played_at')
-            .order('score', { ascending: false })
-            .limit(50);
-        if (error) throw error;
-        renderScoresView(Array.isArray(data) ? data : []);
-    } catch (e) {
-        if (list) list.innerHTML = `<div class="hint" style="color:#fca5a5">Falha ao carregar scores</div>`;
-    }
+  }
 }
 
 // --------------------------- form/state binding --------------------------------
 function getDeep(obj, path) { return path.reduce((o, k) => (o ? o[k] : undefined), obj); }
 function setDeep(obj, path, value) {
-    let cur = obj;
-    for (let i = 0; i < path.length - 1; i++) {
-        const k = path[i];
-        if (typeof cur[k] !== 'object' || cur[k] === null) cur[k] = {};
-        cur = cur[k];
+  let cur = obj;
+  for (let i = 0; i < path.length - 1; i++) {
+    const k = path[i];
+    if (typeof cur[k] !== 'object' || cur[k] === null) cur[k] = {};
+    cur = cur[k];
   }
-    cur[path[path.length - 1]] = value;
+  cur[path[path.length - 1]] = value;
 }
 function deleteDeep(obj, path) {
-    const stack = []; let cur = obj;
-    for (let i = 0; i < path.length - 1; i++) { const k = path[i]; if (!cur || typeof cur !== 'object') return; stack.push([cur, k]); cur = cur[k]; }
-    if (cur && typeof cur === 'object') delete cur[path[path.length - 1]];
-    for (let i = stack.length - 1; i >= 0; i--) {
-        const [parent, key] = stack[i]; const child = parent[key];
-        if (child && typeof child === 'object' && !Object.keys(child).length) delete parent[key];
+  const stack = []; let cur = obj;
+  for (let i = 0; i < path.length - 1; i++) { const k = path[i]; if (!cur || typeof cur !== 'object') return; stack.push([cur, k]); cur = cur[k]; }
+  if (cur && typeof cur === 'object') delete cur[path[path.length - 1]];
+  for (let i = stack.length - 1; i >= 0; i--) {
+    const [parent, key] = stack[i]; const child = parent[key];
+    if (child && typeof child === 'object' && !Object.keys(child).length) delete parent[key];
   }
 }
 function fillForm(cfg) {
-    for (const input of $$('input')) {
-        if (!input.id) continue;
-        const path = input.id.split('.');
-        const value = getDeep(cfg, path);
-
-      if (input.id === 'controls.jump') {
-          input.value = Array.isArray(value) ? value.join(', ') : '';
-          continue;
-      }
-      if (input.type === 'checkbox') { input.checked = Boolean(value); continue; }
-      if (input.type === 'range') { if (value != null) input.value = String(value); continue; }
-      input.value = (value ?? '');
-  }
-}
-function onInputChange(e) {
-    const input = e.target;
-    if (!input.id) return;
+  for (const input of $$('input')) {
+    if (!input.id) continue;
     const path = input.id.split('.');
-    let value;
+    const value = getDeep(cfg, path);
 
     if (input.id === 'controls.jump') {
-        const arr = input.value.split(/[,;\n]/g).map(s => s.trim()).filter(Boolean);
-        if (!arr.length) { deleteDeep(state, path); updatePreview(); return; }
-        value = arr;
-  } else if (input.type === 'checkbox') {
-      value = input.checked;
-  } else if (input.type === 'number' || input.type === 'range') {
-      if (input.value === '') { deleteDeep(state, path); updatePreview(); return; }
-      value = Number(input.value);
-  } else {
-      if (input.value === '') { deleteDeep(state, path); updatePreview(); return; }
-      value = input.value;
+      input.value = Array.isArray(value) ? value.join(', ') : '';
+      continue;
+    }
+    if (input.type === 'checkbox') { input.checked = Boolean(value); continue; }
+    if (input.type === 'range') { if (value != null) input.value = String(value); continue; }
+    if (input.type === 'number') {
+      if (value != null && value !== '') { input.value = String(value); continue; }
+      input.value = '';
+      continue;
+    }
+    input.value = (value ?? '');
   }
-    setDeep(state, path, value);
-    updatePreview();
+
+  // prizes
+  ensurePrizeArray();
+  renderPrizeGroups();
+  updatePreview();
+}
+function onInputChange(e) {
+  const input = e.target;
+  if (!input.id) return;
+  const path = input.id.split('.');
+  let value;
+
+  if (input.id === 'controls.jump') {
+    const arr = input.value.split(/[,;\n]/g).map(s => s.trim()).filter(Boolean);
+    if (!arr.length) { deleteDeep(state, path); updatePreview(); return; }
+    value = arr;
+  } else if (input.type === 'checkbox') {
+    value = input.checked;
+  } else if (input.type === 'number' || input.type === 'range') {
+    if (input.value === '') { deleteDeep(state, path); updatePreview(); return; }
+    value = Number(input.value);
+  } else {
+    if (input.value === '') { deleteDeep(state, path); updatePreview(); return; }
+    value = input.value;
+  }
+
+  setDeep(state, path, value);
+  updatePreview();
+
+  // se alterou difficulty/prizes, re-render grupos
+  if (path[0] === 'difficulty' || path[0] === 'prizes') {
+    if (lastScoresCache?.length) {
+      renderScoresByGroups(lastScoresCache);
+    }
+  }
 }
 function attachInputListeners() {
-    for (const input of $$('input')) {
-        if (!input.id || input.dataset.bound === '1') continue;
-        input.dataset.bound = '1';
-        input.addEventListener('input', onInputChange);
-        if (input.type === 'checkbox' || input.type === 'range') {
-            input.addEventListener('change', onInputChange);
-        }
+  for (const input of $$('input')) {
+    if (!input.id || input.dataset.bound === '1') continue;
+    input.dataset.bound = '1';
+    input.addEventListener('input', onInputChange);
+    if (input.type === 'checkbox' || input.type === 'range') {
+      input.addEventListener('change', onInputChange);
+    }
   }
 }
 
 // ------------------------------ ações UI --------------------------------------
 async function onLoadSupabase() {
-    try {
-        const remote = await loadFromSupabase(getSlug());
-        if (remote) {
-            state = remote;
-            ensurePrizeArray(); // garante estrutura antes de render
-        fillForm(state); updatePreview();
-            renderPrizeGroups();
-        flash(`Config carregada (${getSlug()}) ✔`);
+  try {
+    const remote = await loadFromSupabase(getSlug());
+    if (remote) {
+      state = remote;
+      fillForm(state);
+      flash(`Config carregada (${getSlug()}) ✔`);
     } else {
-        state = {};
-            ensurePrizeArray();
-        fillForm(state); updatePreview();
-            renderPrizeGroups();
-        flash('Nenhum registro para este slug — salve para criar.', true);
+      state = {};
+      fillForm(state);
+      flash('Nenhum registro para este slug — salve para criar.', true);
     }
-        await loadScores();
   } catch (e) {
-      console.error('[Supabase] select error:', e);
-      flash('Falha ao carregar do Supabase', true);
+    console.error('[Supabase] select error:', e);
+    flash('Falha ao carregar do Supabase', true);
   }
 }
 async function onSaveSupabase() {
-    try {
-        let row;
-        if (role === 'master') {
-            row = await saveToSupabase(getSlug(), state); // salva tudo (inclui prizes)
-        } else {
-            // client: salva apenas Difficulty + Prizes
-            const diff = state?.difficulty || {};
-            const prizes = Array.isArray(state?.prizes) ? state.prizes : [];
-            row = await saveDifficultyAndPrizesOnly(getSlug(), diff, prizes);
-        }
-        flash(`Config salva (${row?.slug || getSlug()}) ✔`);
-        await loadScores(); // recarrega painel com possíveis grupos alterados
-    } catch (e) {
-        console.error('[Supabase] upsert error:', e);
-      flash(`Falha ao salvar: ${e?.message || e}`, true);
+  try {
+    let row;
+    if (role === 'master') {
+      row = await saveToSupabase(getSlug(), state);
+    } else {
+      // cliente salva apenas campos editáveis
+      const patch = {
+        difficulty: state?.difficulty || {},
+        prizes: Array.isArray(state?.prizes) ? state.prizes : [],
+      };
+      row = await saveClientEditable(getSlug(), patch);
+    }
+    flash(`Config salva (${row?.slug || getSlug()}) ✔`);
+  } catch (e) {
+    console.error('[Supabase] upsert error:', e);
+    flash(`Falha ao salvar: ${e?.message || e}`, true);
   }
 }
 
 function wireHeader() {
-    const slugInput = $('#cfgSlug');
+  const slugInput = $('#cfgSlug');
+  if (slugInput) {
     slugInput.value = getSlug();
     slugInput.addEventListener('change', e => setSlug(String(e.target.value || '').trim() || DEFAULT_SLUG));
-    $('#loadSupabase').addEventListener('click', onLoadSupabase);
-    $('#saveSupabase').addEventListener('click', onSaveSupabase);
-    $('#btnLogout').addEventListener('click', () => {
-        setRole('client');
-        $('#whoami').textContent = 'Deslogado';
-        showAuth();
-    });
+  }
+  $('#loadSupabase')?.addEventListener('click', onLoadSupabase);
+  $('#saveSupabase')?.addEventListener('click', onSaveSupabase);
+  $('#btnLogout')?.addEventListener('click', () => {
+    setRole('client');
+    const who = $('#whoami');
+    if (who) who.textContent = 'Deslogado';
+    showAuth();
+  });
 }
 
 function checkMockCredentials(email, password) {
-    if (email === MOCK_CREDENTIALS.master.email && password === MOCK_CREDENTIALS.master.password) return 'master';
-    if (email === MOCK_CREDENTIALS.client.email && password === MOCK_CREDENTIALS.client.password) return 'client';
-    return null;
+  if (email === MOCK_CREDENTIALS.master.email && password === MOCK_CREDENTIALS.master.password) return 'master';
+  if (email === MOCK_CREDENTIALS.client.email && password === MOCK_CREDENTIALS.client.password) return 'client';
+  return null;
 }
 function wireAuthView() {
-    $('#doSignIn').addEventListener('click', async () => {
-        const email = ($('#authEmail').value || '').trim();
-        const password = $('#authPass').value || '';
-        const r = checkMockCredentials(email, password);
-        if (!r) {
-            $('#authMsg').textContent = 'Credenciais inválidas.';
-            return;
-        }
-        $('#authMsg').textContent = '';
-        setRole(r);
-        $('#whoami').textContent = `${email} (${r})`;
-        showApp();
-        await onLoadSupabase();
-      flash('Login ok ✔');
+  $('#doSignIn')?.addEventListener('click', async () => {
+    const email = ($('#authEmail')?.value || '').trim();
+    const password = $('#authPass')?.value || '';
+    const r = checkMockCredentials(email, password);
+    if (!r) {
+      const msg = $('#authMsg'); if (msg) msg.textContent = 'Credenciais inválidas.';
+      return;
+    }
+    const msg = $('#authMsg'); if (msg) msg.textContent = '';
+    setRole(r);
+    const who = $('#whoami'); if (who) who.textContent = `${email} (${r})`;
+    showApp();
+    await onLoadSupabase();
+    await loadScores();
+    flash('Login ok ✔');
   });
+}
+
+// --------------------------- Render dos painéis --------------------------------
+function renderScoresOverall(rows) {
+  const list = $('#scoresList');
+  if (!list) return;
+  if (!rows || !rows.length) {
+    list.innerHTML = `<div class="hint">Sem scores ainda.</div>`;
+    return;
+  }
+  list.innerHTML = rows.map((r, i) => `
+    <div class="scoreItem">
+      <div class="rank">#${i + 1}</div>
+      <div>
+        <div>${escapeHtml(r.player_name || 'Anônimo')}</div>
+        ${r.played_at ? `<div class="hint">${new Date(r.played_at).toLocaleString()}</div>` : ''}
+        ${r.prize_group ? `<div class="hint">Grupo: ${escapeHtml(r.prize_group)}</div>` : ''}
+      </div>
+      <div class="pts">${r.score ?? 0}</div>
+    </div>
+  `).join('');
+}
+
+function renderScoresByGroups(rows) {
+  // destino preferencial
+  let box = $('#scoresByGroup');
+  const usingFallback = !box;
+  if (!box) {
+    // se não houver #scoresByGroup, injeta uma seção no topo do #scoresList (sem quebrar CSS)
+    const list = $('#scoresList');
+    if (!list) return;
+    box = document.createElement('div');
+    box.id = 'scoresByGroup';
+    list.parentNode.insertBefore(box, list);
+  }
+
+  const prizes = normalizePrizes(state.prizes || []);
+  if (!rows?.length) {
+    box.innerHTML = `<div class="hint">Sem scores ainda.</div>`;
+    return;
+  }
+
+  // monta grupos: usa prize_group salvo se existir; caso contrário, calcula pelo range atual
+  const groups = new Map(); // name -> array rows
+  const nameFor = (r) => r.prize_group || whichPrizeName(Number(r.score || 0), prizes) || 'Sem grupo';
+  rows.forEach(r => {
+    const name = nameFor(r);
+    if (!groups.has(name)) groups.set(name, []);
+    groups.get(name).push(r);
+  });
+
+  // ordena grupos pela ordem em prizes, depois alfabético
+  const orderMap = new Map(prizes.map((g, i) => [g.name, i]));
+  const sortedGroupNames = Array.from(groups.keys()).sort((a, b) => {
+    const ia = orderMap.has(a) ? orderMap.get(a) : 9999;
+    const ib = orderMap.has(b) ? orderMap.get(b) : 9999;
+    if (ia !== ib) return ia - ib;
+    return a.localeCompare(b);
+  });
+
+  const html = sortedGroupNames.map(gname => {
+    const arr = groups.get(gname).slice().sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+    const items = arr.map((r, i) => `
+      <div class="scoreItem">
+        <div class="rank">#${i + 1}</div>
+        <div>
+          <div>${escapeHtml(r.player_name || 'Anônimo')}</div>
+          ${r.played_at ? `<div class="hint">${new Date(r.played_at).toLocaleString()}</div>` : ''}
+        </div>
+        <div class="pts">${r.score ?? 0}</div>
+      </div>
+    `).join('');
+    return `
+      <div style="margin:10px 0 4px; font-weight:700">${escapeHtml(gname)}</div>
+      <div>${items || `<div class="hint">Sem jogadores.</div>`}</div>
+    `;
+  }).join('');
+
+  box.innerHTML = `
+    <h2 style="margin:8px 0 6px">Ranking por Grupo</h2>
+    ${html || `<div class="hint">Sem grupos configurados.</div>`}
+    ${usingFallback ? `<hr style="border:none;border-top:1px dashed var(--line);margin:8px 0 12px">` : ''}
+  `;
+}
+
+// ------------------------------ utils -----------------------------------------
+function escapeHtml(s) {
+  return String(s).replace(/[<>&"]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]));
 }
 
 // ----------------------------------- boot -------------------------------------
 window.addEventListener('DOMContentLoaded', async () => {
-    // start como client (somente Difficulty/Prizes editáveis)
-    setRole('client');
-    showAuth();
+  // start como client (somente Difficulty/Prizes editáveis)
+  setRole('client');
+  showAuth();
 
-    wireHeader();
-    wireAuthView();
-    attachInputListeners();
-
-    // UI de prêmios aparece mesmo antes de carregar (com defaults),
-    // e será atualizada quando o load do Supabase chegar.
-    ensurePrizeArray();
-    renderPrizeGroups();
+  wireHeader();
+  wireAuthView();
+  attachInputListeners();
 });
