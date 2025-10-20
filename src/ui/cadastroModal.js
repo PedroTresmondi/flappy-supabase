@@ -365,12 +365,12 @@ function trySave() {
 // ---------------- teclado virtual ----------------
 function buildKeyboard(root) {
   root.innerHTML = "";
-  const ROW0 = [..."1234567890"];
+  /*   const ROW0 = [..."1234567890"]; */
   const ROW1 = [..."QWERTYUIOP"];
   const ROW2 = [..."ASDFGHJKL"];
   const ROW3 = [..."ZXCVBNMÇ"];
 
-  root.appendChild(makeRow(ROW0));
+  /*   root.appendChild(makeRow(ROW0));*/
   root.appendChild(makeRow(ROW1));
   root.appendChild(makeRow(ROW2));
   root.appendChild(makeRow([
