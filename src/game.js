@@ -105,7 +105,7 @@ const DEFAULT_CONFIG = {
     gameOverText: 'GAME OVER', gameOverFont: '45px sans-serif', gameOverColor: '#ffffff'
   },
   controls: { jump: ['Space', 'ArrowUp', 'KeyX'], minFlapIntervalMs: 120, allowHoldToFlap: false },
-  gameplay: { restartOnJump: false, gracePeriodMs: 100, pauseKey: 'KeyP' },
+  gameplay: { restartOnJump: false, gracePeriodMs: 0, pauseKey: 'KeyP' },
   // colisão pixel-perfect
   collision: {
     birdPixelPerfect: true,
