@@ -37,8 +37,8 @@ const DEFAULT_ASSETS = {
 
 // UI do overlay inicial
 const UI_ASSETS = {
-  title: joinBase('assets/img/logo_title.png'),     // opcional
-  heroBird: joinBase('assets/img/bird_hero.png'),   // pássaro “hero” no start
+  title: joinBase('assets/img/logo_title.png'),
+  heroBird: joinBase('assets/img/flappybird.png'),
   hand: joinBase('assets/img/handClick.png'),
   play: joinBase('assets/img/play.png'),
   ranking: joinBase('assets/img/ranking.png'),
@@ -94,7 +94,22 @@ const DEFAULT_CONFIG = {
     gameOverText: 'GAME OVER', gameOverFont: '45px sans-serif', gameOverColor: '#ffffff'
   },
   controls: { jump: ['Space', 'ArrowUp', 'KeyX'], minFlapIntervalMs: 120, allowHoldToFlap: false },
-  gameplay: { restartOnJump: false, gracePeriodMs: 100, pauseKey: 'KeyP' }
+  gameplay: { restartOnJump: false, gracePeriodMs: 100, pauseKey: 'KeyP' },
+  // colisão pixel-perfect
+  collision: {
+    birdPixelPerfect: true,
+    alphaThreshold: 10,
+    pipeAlphaThreshold: 10,
+    pipeFallbackInsetPx: 6,
+    debug: false
+  },
+  // Sequência de morte
+  death: {
+    flashMs: 140,
+    freezeMs: 1000,
+    fallGravityScale: 1,
+    flashColor: '#ffffff'
+  }
 };
 
 // ================== ESTADO ==================
@@ -102,6 +117,12 @@ let cfg = structuredClone(DEFAULT_CONFIG);
 let canvas, ctx;
 let topPipeImg = null, bottomPipeImg = null, bgImg = null;
 let birdImgs = [], SFX = {};
+
+// Máscaras de colisão pixel-perfect dos canos
+let pipeMaskTop = null, pipeMaskBottom = null;
+
+// offscreen p/ raster do pássaro rotacionado
+let collCanvas = null, collCtx = null;
 
 let bird, velocityY = 0, pipeArray = [];
 let isGameOver = false, score = 0;
@@ -119,9 +140,22 @@ let rafId = 0, running = false;
 
 // BG scroll
 let bgScrollX = 0;
+// NOVO: bg congelado durante morte
+let bgFrozen = false;
 
 // loop leve do BG para telas
 let rafBgId = 0, bgLooping = false, lastBgOnlyTs = 0;
+
+// NOVO: estado da morte
+let dying = false;
+let death = {
+  active: false,
+  hitTs: 0,
+  flashEnd: 0,
+  freezeUntil: 0,
+  holdY: 0,
+  holdTilt: 0
+};
 
 // ================== BOOT ==================
 export async function boot() {
@@ -135,7 +169,7 @@ export async function boot() {
 
   ensureStartOverlay();
   ensureScoresOverlay();
-  ensureRankOverlay(); // novo modal de Game Over / Ranking
+  ensureRankOverlay();
 
   showStartOverlay();
   startBgLoop();
@@ -160,10 +194,14 @@ function resetRunState() {
   activeTimeMs = 0; timeRampStartTs = 0; lastFlapTs = -1;
 
   bgScrollX = 0;
+  bgFrozen = false; // NOVO
+
+  // reset death
+  dying = false;
+  death.active = false;
 }
 
 export async function startGame() {
-  // entra no cadastro antes da partida (sem sobreposição dos botões)
   hideStartOverlay();
   hideScoresOverlay();
   hideRankOverlay();
@@ -176,7 +214,6 @@ export async function startGame() {
   stopGameLoop();
 
   running = true;
-  // Spawner começa no primeiro flap
   rafId = requestAnimationFrame(tick);
 }
 
@@ -188,7 +225,7 @@ export function gameOver() {
   stopSpawning();
   stopGameLoop();
 
-  startBgLoop();
+  // IMPORTANTE: não recomeça bg loop aqui -> fundo fica estático no Game Over
   handleGameOverSave().catch(() => { });
 }
 
@@ -306,30 +343,50 @@ function scaleFontSpec(spec, S) {
   return spec.replace(/(\d+(\.\d+)?)px/ig, (_, n) => `${Math.round(parseFloat(n) * S)}px`);
 }
 
-// ================== CANVAS / ASSETS ==================
+// ================== CANVAS / LAYOUT FULLSCREEN ==================
 function setupCanvas() {
   canvas = document.getElementById('board') || Object.assign(document.createElement('canvas'), { id: 'board' });
   if (!canvas.isConnected) document.body.appendChild(canvas);
 
-  document.documentElement.style.height = '100%';
+  canvas.width = cfg.board.width;   // 1080
+  canvas.height = cfg.board.height; // 1920
+
+  Object.assign(document.documentElement.style, { height: '100%' });
   Object.assign(document.body.style, {
-    margin: '0', height: '100%', display: 'grid', placeItems: 'center',
-    background: cfg.board.background || '#000'
+    margin: '0',
+    background: cfg.board.background || '#000',
+    overflow: 'hidden'
   });
 
-  canvas.width = cfg.board.width;
-  canvas.height = cfg.board.height;
-
-  const vw = Math.max(1, window.innerWidth || canvas.width);
-  const vh = Math.max(1, window.innerHeight || canvas.height);
-  const scale = Math.min(vw / canvas.width, vh / canvas.height);
-  canvas.style.width = Math.round(canvas.width * scale) + 'px';
-  canvas.style.height = Math.round(canvas.height * scale) + 'px';
+  Object.assign(canvas.style, {
+    position: 'fixed',
+    left: '0px',
+    top: '0px',
+    imageRendering: 'pixelated',
+  });
 
   ctx = canvas.getContext('2d', { alpha: false });
   ctx.imageSmoothingEnabled = false;
+
+  layoutCanvasCover();
+  window.addEventListener('resize', layoutCanvasCover);
 }
 
+function layoutCanvasCover() {
+  const vw = Math.max(1, window.innerWidth);
+  const vh = Math.max(1, window.innerHeight);
+
+  const scale = Math.max(vw / canvas.width, vh / canvas.height);
+  const cssW = Math.round(canvas.width * scale);
+  const cssH = Math.round(canvas.height * scale);
+
+  canvas.style.width = cssW + 'px';
+  canvas.style.height = cssH + 'px';
+  canvas.style.left = Math.round((vw - cssW) / 2) + 'px';
+  canvas.style.top = Math.round((vh - cssH) / 2) + 'px';
+}
+
+// ================== ASSETS / MÁSCARAS DE CANO ==================
 function loadAssets() {
   return new Promise((resolve) => {
     const frames = cfg.assets.birdFrames || [];
@@ -354,13 +411,19 @@ function loadAssets() {
 
     topPipeImg = new Image();
     topPipeImg.crossOrigin = "anonymous";
-    topPipeImg.onload = done;
+    topPipeImg.onload = () => {
+      try { pipeMaskTop = buildPipeMask(topPipeImg); } catch (e) { console.warn('mask top err:', e); }
+      done();
+    };
     topPipeImg.onerror = () => { console.warn('[assets] topPipe falhou:', cfg.assets.topPipe); topPipeImg = null; done(); };
     topPipeImg.src = cfg.assets.topPipe;
 
     bottomPipeImg = new Image();
     bottomPipeImg.crossOrigin = "anonymous";
-    bottomPipeImg.onload = done;
+    bottomPipeImg.onload = () => {
+      try { pipeMaskBottom = buildPipeMask(bottomPipeImg); } catch (e) { console.warn('mask bottom err:', e); }
+      done();
+    };
     bottomPipeImg.onerror = () => { console.warn('[assets] bottomPipe falhou:', cfg.assets.bottomPipe); bottomPipeImg = null; done(); };
     bottomPipeImg.src = cfg.assets.bottomPipe;
 
@@ -412,6 +475,30 @@ function applyDynamicBirdAutosize() {
   if (bird) { bird.width = targetW; bird.height = targetH; }
 }
 
+// Gera máscara binária (1=opaco, 0=transparente) para colisão pixel-perfect
+function buildPipeMask(img) {
+  const w = Math.max(1, cfg.pipes.width | 0);
+  const h = Math.max(1, cfg.pipes.height | 0);
+
+  const buf = (typeof OffscreenCanvas !== 'undefined')
+    ? new OffscreenCanvas(w, h)
+    : Object.assign(document.createElement('canvas'), { width: w, height: h });
+
+  const bctx = buf.getContext('2d', { alpha: true, willReadFrequently: true });
+  bctx.imageSmoothingEnabled = false;
+  bctx.clearRect(0, 0, w, h);
+  bctx.drawImage(img, 0, 0, w, h);
+
+  const imgData = bctx.getImageData(0, 0, w, h);
+  const data = imgData.data;
+  const t = Math.max(0, cfg.collision?.pipeAlphaThreshold ?? 10);
+  const mask = new Uint8Array(w * h);
+  for (let i = 0, j = 0; j < mask.length; j++, i += 4) {
+    mask[j] = data[i + 3] > t ? 1 : 0;
+  }
+  return { mask, w, h };
+}
+
 // ================== CONTROLES ==================
 function isTypingTarget(ev) {
   const el = ev?.target;
@@ -454,6 +541,7 @@ function onJumpKey(e) {
   if (!running) return;
   if (!allowedJumpKeys.has(e.code)) return;
   if (paused) return;
+  if (dying) return; // NOVO: sem flaps durante a morte
 
   const now = performance.now();
   const minInt = Math.max(0, cfg.controls.minFlapIntervalMs || 0);
@@ -487,6 +575,35 @@ function onJumpKey(e) {
   }
 }
 
+// ================== MORTE / FX ==================
+function startDeathSequence() {
+  if (dying || isGameOver) return;
+  dying = true;
+  death.active = true;
+  death.hitTs = performance.now();
+  death.flashEnd = death.hitTs + Math.max(0, cfg.death?.flashMs ?? 140);
+  death.freezeUntil = death.hitTs + Math.max(0, cfg.death?.freezeMs ?? 1000);
+  death.holdY = clamp(bird.y, 0, canvas.height - bird.height);
+  death.holdTilt = birdTiltDeg;
+  velocityY = 0;
+
+  stopSpawning();       // para gerar novos canos
+  bgFrozen = true;      // NOVO: congela o BG imediatamente
+  try { SFX.hit?.play(); } catch { }
+}
+
+function drawDeathFlash(nowTs) {
+  if (!death.active) return;
+  const end = death.flashEnd || 0;
+  if (nowTs >= end) return;
+  const t = clamp(1 - ((nowTs - death.hitTs) / (end - death.hitTs)), 0, 1);
+  ctx.save();
+  ctx.globalAlpha = t;
+  ctx.fillStyle = cfg.death?.flashColor || '#fff';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.restore();
+}
+
 // ================== LOOP ==================
 function tick(ts) {
   if (!running) return;
@@ -502,7 +619,7 @@ function tick(ts) {
 
   const t = dt / 16.667;
 
-  if (gameStarted && !paused && !isGameOver && nowTs >= timeRampStartTs) activeTimeMs += dt;
+  if (gameStarted && !paused && !isGameOver && nowTs >= timeRampStartTs && !dying) activeTimeMs += dt;
 
   drawHUD();
 
@@ -514,6 +631,39 @@ function tick(ts) {
   }
   if (isGameOver) return;
 
+  // === SEQUÊNCIA DE MORTE CONGELANDO BG & CANOS ===
+  if (dying) {
+    // NÃO mover canos nem remover; só redesenhar estáticos
+    for (let i = 0; i < pipeArray.length; i++) {
+      const p = pipeArray[i];
+      tryDrawImage(p.img, p.x, p.y, p.width, p.height);
+    }
+
+    // pássaro congelado, depois queda
+    if (nowTs < death.freezeUntil) {
+      bird.y = death.holdY;
+      birdTiltDeg = death.holdTilt;
+    } else {
+      // queda (somente o pássaro se move)
+      const g = (cfg.physics.gravity || 0.4) * (cfg.death?.fallGravityScale ?? 1);
+      velocityY += g * t;
+      if (velocityY > cfg.bird.maxFallSpeed) velocityY = cfg.bird.maxFallSpeed;
+      bird.y += velocityY * t;
+      updateBirdTilt(t);
+    }
+
+    drawBirdWithTilt();
+    drawDeathFlash(nowTs);
+
+    // finaliza quando sair da tela
+    if (bird.y > canvas.height + Math.max(16, bird.height)) {
+      gameOver();
+      return;
+    }
+    return;
+  }
+
+  // === jogo normal ===
   const inGrace = performance.now() < graceUntilTs;
   if (inGrace) { velocityY += cfg.physics.gravity * t; if (velocityY > 0) velocityY = 0; }
   else { velocityY += cfg.physics.gravity * t; if (velocityY > cfg.bird.maxFallSpeed) velocityY = cfg.bird.maxFallSpeed; }
@@ -522,7 +672,8 @@ function tick(ts) {
   updateBirdTilt(t);
   drawBirdWithTilt();
 
-  if (bird.y > canvas.height) { gameOver(); return; }
+  // chão -> inicia morte
+  if (!dying && bird.y > canvas.height) { startDeathSequence(); }
 
   const scroll = currentScrollSpeed();
   for (let i = 0; i < pipeArray.length; i++) {
@@ -530,8 +681,9 @@ function tick(ts) {
     p.x += scroll * t;
     tryDrawImage(p.img, p.x, p.y, p.width, p.height);
 
-    if (!p.passed && bird.x > p.x + p.width) { score += cfg.scoring.pointsPerPipe; p.passed = true; try { SFX.score?.play(); } catch { } }
-    if (collides(bird, p)) { gameOver(); return; }
+    if (!dying && !p.passed && bird.x > p.x + p.width) { score += cfg.scoring.pointsPerPipe; p.passed = true; try { SFX.score?.play(); } catch { } }
+
+    if (!dying && collidesPipePixelPerfect(bird, p)) { startDeathSequence(); }
   }
   while (pipeArray.length > 0 && pipeArray[0].x < -cfg.pipes.width) pipeArray.shift();
 }
@@ -572,8 +724,11 @@ function drawBackground(dtMs) {
   const factor = Number(cfg.bg?.parallaxFactor ?? 0.5);
   const bgPxPerSec = fixed > 0 ? fixed : (pxPerSecPipes * factor);
 
-  const delta = Math.max(0, dtMs) / 1000;
-  bgScrollX = (bgScrollX + bgPxPerSec * delta) || 0;
+  // NOVO: congelar o deslocamento do BG durante a morte
+  if (!bgFrozen) {
+    const delta = Math.max(0, dtMs) / 1000;
+    bgScrollX = (bgScrollX + bgPxPerSec * delta) || 0;
+  }
 
   const imgW = bgImg.naturalWidth, imgH = bgImg.naturalHeight;
   const scale = canvas.height / imgH;
@@ -697,11 +852,149 @@ function placePipes() {
     { img: bottomPipeImg, x: canvas.width, y: botY, width: w0, height: h0, passed: false },
   );
 }
-function collides(a, b) {
+
+// AABB rápido (retângulo) – com padding do pássaro
+function birdRectPadded(a) {
   const pad = Math.max(0, cfg.bird.hitboxPadding || 0);
-  const ax = a.x + pad, ay = a.y + pad;
-  const aw = a.width - pad * 2, ah = a.height - pad * 2;
-  return ax < b.x + b.width && ax + aw > b.x && ay < b.y + b.height && ay + ah > b.y;
+  return { x: a.x + pad, y: a.y + pad, width: a.width - pad * 2, height: a.height - pad * 2 };
+}
+function collidesAABB(a, b) {
+  const r = birdRectPadded(a);
+  return r.x < b.x + b.width && r.x + r.width > b.x && r.y < b.y + b.height && r.y + r.height > b.y;
+}
+// AABB com inset no cano (fallback sem CORS/máscara)
+function collidesInsetAABB(a, b, insetPx = 0) {
+  const i = Math.max(0, insetPx | 0);
+  const r = birdRectPadded(a);
+  const bx1 = b.x + i, by1 = b.y + i, bx2 = b.x + b.width - i, by2 = b.y + b.height - i;
+  return r.x < bx2 && r.x + r.width > bx1 && r.y < by2 && r.y + r.height > by1;
+}
+
+// Seleciona o frame atual do pássaro
+function getCurrentBirdImage() {
+  const now = performance.now();
+  let frameIdx = 0;
+  if (now < flapAnimEnd && birdImgs.length > 1 && (cfg.bird.flapAnim?.fps ?? 0) > 0) {
+    const fps = cfg.bird.flapAnim.fps;
+    frameIdx = Math.floor(((now - flapAnimStart) / 1000) * fps) % birdImgs.length;
+  }
+  let img = birdImgs[frameIdx];
+  if (!okImg(img)) img = birdImgs.find(okImg) || null;
+  return img;
+}
+
+// Canvas offscreen reutilizado para colisão
+function ensureCollCanvas(w, h) {
+  const W = Math.max(1, w | 0), H = Math.max(1, h | 0);
+  if (!collCanvas) {
+    collCanvas = (typeof OffscreenCanvas !== 'undefined')
+      ? new OffscreenCanvas(W, H)
+      : Object.assign(document.createElement('canvas'), { width: W, height: H });
+    collCtx = collCanvas.getContext('2d', { alpha: true, willReadFrequently: true });
+    collCtx.imageSmoothingEnabled = false;
+  }
+  if (collCanvas.width !== W || collCanvas.height !== H) {
+    collCanvas.width = W; collCanvas.height = H;
+  }
+  return collCtx;
+}
+
+// Pixel-perfect pássaro(rotacionado) vs máscara do cano
+function collideBirdRotatedWithPipeMask(birdRect, angleDeg, pipe, m) {
+  if (!collidesAABB(birdRect, pipe)) return false;
+
+  const r = birdRectPadded(birdRect);
+  const ox1 = Math.max(r.x, pipe.x) | 0;
+  const oy1 = Math.max(r.y, pipe.y) | 0;
+  const ox2 = Math.min(r.x + r.width, pipe.x + pipe.width) | 0;
+  const oy2 = Math.min(r.y + r.height, pipe.y + pipe.height) | 0;
+  const ow = (ox2 - ox1) | 0, oh = (oy2 - oy1) | 0;
+  if (ow <= 0 || oh <= 0) return false;
+
+  if (!m || !m.mask) {
+    return collidesInsetAABB(birdRect, pipe, cfg.collision?.pipeFallbackInsetPx ?? 6);
+  }
+
+  const img = getCurrentBirdImage();
+  if (!img) return collidesInsetAABB(birdRect, pipe, cfg.collision?.pipeFallbackInsetPx ?? 6);
+
+  const bctx = ensureCollCanvas(ow, oh);
+  bctx.setTransform(1, 0, 0, 1, 0, 0);
+  bctx.clearRect(0, 0, ow, oh);
+
+  bctx.translate(-ox1, -oy1);
+  const cx = birdRect.x + birdRect.width / 2;
+  const cy = birdRect.y + birdRect.height / 2;
+  bctx.translate(cx, cy);
+  bctx.rotate(deg2rad(angleDeg));
+  bctx.drawImage(img, -birdRect.width / 2, -birdRect.height / 2, birdRect.width, birdRect.height);
+
+  const data = bctx.getImageData(0, 0, ow, oh).data;
+  const ath = Math.max(0, cfg.collision?.alphaThreshold ?? 10);
+
+  const mw = m.w, mh = m.h, MASK = m.mask;
+  const sx = mw / pipe.width;
+  const sy = mh / pipe.height;
+
+  for (let y = 0; y < oh; y++) {
+    const row = y * ow * 4;
+    const my = ((oy1 + y) - pipe.y) * sy;
+    if (my < 0 || my >= mh) continue;
+    const imy = my | 0;
+    const mrow = imy * mw;
+
+    for (let x = 0; x < ow; x++) {
+      const a = data[row + x * 4 + 3];
+      if (a <= ath) continue;
+
+      const mx = ((ox1 + x) - pipe.x) * sx;
+      if (mx < 0 || mx >= mw) continue;
+
+      if (MASK[mrow + (mx | 0)]) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function collidesPipePixelPerfect(birdRect, pipe) {
+  if (cfg.collision?.birdPixelPerfect) {
+    const m = (pipe.img === topPipeImg) ? pipeMaskTop
+      : (pipe.img === bottomPipeImg) ? pipeMaskBottom
+        : null;
+    return collideBirdRotatedWithPipeMask(birdRect, birdTiltDeg, pipe, m);
+  }
+
+  if (!collidesAABB(birdRect, pipe)) return false;
+  const m = (pipe.img === topPipeImg) ? pipeMaskTop
+    : (pipe.img === bottomPipeImg) ? pipeMaskBottom
+      : null;
+  if (!m || !m.mask) {
+    return collidesInsetAABB(birdRect, pipe, cfg.collision?.pipeFallbackInsetPx ?? 6);
+  }
+
+  const r = birdRectPadded(birdRect);
+  const ox1 = Math.max(r.x, pipe.x) | 0;
+  const oy1 = Math.max(r.y, pipe.y) | 0;
+  const ox2 = Math.min(r.x + r.width, pipe.x + pipe.width) | 0;
+  const oy2 = Math.min(r.y + r.height, pipe.y + pipe.height) | 0;
+  if (ox2 <= ox1 || oy2 <= oy1) return false;
+
+  const mw = m.w, mh = m.h, MASK = m.mask;
+  const sx = mw / pipe.width;
+  const sy = mh / pipe.height;
+  for (let wy = oy1; wy < oy2; wy++) {
+    const imy = ((wy - pipe.y) * sy) | 0;
+    if (imy < 0 || imy >= mh) continue;
+    const mrow = imy * mw;
+    for (let wx = ox1; wx < ox2; wx++) {
+      const imx = ((wx - pipe.x) * sx) | 0;
+      if (imx < 0 || imx >= mw) continue;
+      if (MASK[mrow + imx]) return true;
+    }
+  }
+  return false;
 }
 
 // ================== SUPABASE / RANK ==================
@@ -732,7 +1025,6 @@ async function salvarScoreNoSupabase(pontos) {
 
 async function fetchRankForScore(finalScore) {
   if (!supabase) return null;
-  // posição = (# de scores estritamente maiores) + 1
   const { count, error } = await supabase
     .from(SUPABASE_SCORES_TABLE)
     .select('*', { count: 'exact', head: true })
@@ -770,22 +1062,22 @@ function ensureStartOverlay() {
     }
     #startOverlay .hero{
       position:absolute;left:50%;top:44%;
-      width:min(48vw,520px);transform:translate(-50%,-50%);
+      width:min(80vw,700px);transform:translate(-50%,-50%);
       animation:hero-bob 1.8s ease-in-out infinite;
       pointer-events:none;filter: drop-shadow(0 4px 0 rgba(0,0,0,.15));
     }
     #startOverlay .hand{
-      position:absolute;left:64%;top:57%;
-      width:min(14vw,150px);transform-origin:10% 10%;
+      position:absolute;left:60%;top:50%;
+      width:min(50vw,150px);transform-origin:10% 10%;
       animation:hand-tap 1.15s ease-in-out infinite;pointer-events:none;
       filter: drop-shadow(0 2px 0 rgba(0,0,0,.15));
     }
     #startOverlay .buttons{
-      position:absolute;left:0;right:0;bottom:7vh;
-      display:flex;justify-content:center;gap:28px;
+      position:absolute;left:0;right:0;bottom:20vh;
+      display:flex;justify-content:center;gap:35px;
     }
     #startOverlay .btn{pointer-events:auto;display:inline-block;transition:transform .08s ease}
-    #startOverlay .btn img{display:block;height:min(96px,11vh)}
+    #startOverlay .btn img{display:block;height:min(180px,11vh)}
     #startOverlay .btn:hover{transform:translateY(-2px)}
     #startOverlay .btn:active{transform:translateY(2px)}
     @keyframes hero-bob{0%,100%{transform:translate(-50%,-52%)}50%{transform:translate(-50%,-48%)}}
@@ -821,63 +1113,126 @@ function ensureScoresOverlay() {
   const st = document.createElement('style');
   st.id = 'scoresStyles';
   st.textContent = `
-    #scoresOverlay{position:fixed;inset:0;display:none;place-items:center;z-index:1000}
-    #scoresOverlay.show{display:grid}
-    #scoresOverlay .backdrop{position:absolute;inset:0;background:rgba(0,0,0,.55);backdrop-filter: blur(2px)}
-    #scoresOverlay .card{position:relative;background:#0f172a;border:1px solid #1f2937;border-radius:16px;padding:16px;min-width:320px;max-width:92vw;color:#e5e7eb;box-shadow:0 10px 30px #0009}
-    #scoresOverlay .title{font:600 20px/1.2 system-ui;margin:0 0 8px}
-    #scoresOverlay .list{max-height:260px;overflow:auto;margin-top:6px;border-top:1px solid #1f2937;padding-top:6px}
-    #scoresOverlay .item{display:grid;grid-template-columns: 36px 1fr auto;align-items:center;gap:8px;padding:6px 4px;border-bottom:1px dashed #1f2937}
-    #scoresOverlay .muted{color:#94a3b8;font-size:12px}
-    #scoresOverlay .row{display:flex;gap:8px;margin-top:10px}
-    #scoresOverlay .btn{appearance:none;border:1px solid #334155;background:#111827;color:#e5e7eb;padding:8px 12px;border-radius:10px;cursor:pointer;font-size:14px}
-    #scoresOverlay .btn:hover{background:#1f2937}
+    #scoresOverlay{position:fixed;inset:0;display:none;z-index:1000;pointer-events:auto}
+    #scoresOverlay.show{display:block}
+    #scoresOverlay .wrap{
+      position:absolute; inset:0;
+      display:grid; grid-template-rows: auto auto 1fr;
+      justify-items:center; align-content:start;
+      padding-top:min(4vh, 24px);
+    }
+    #scoresOverlay .logo{
+      width:min(68vw, 420px);
+      image-rendering:pixelated; image-rendering:crisp-edges;
+      filter:drop-shadow(0 2px 0 rgba(0,0,0,.20));
+      user-select:none; -webkit-user-drag:none;
+    }
+    #scoresOverlay .title{
+      width:100%; max-width:min(88vw, 520px);
+      margin-top:min(3vh, 22px); margin-bottom:8px;
+      font-weight:900; color:#fff;
+      font-size:clamp(22px, 5vh, 36px);
+      text-shadow:
+        -2px -2px 0 #0a0a0a, 2px -2px 0 #0a0a0a,
+        -2px  2px 0 #0a0a0a, 2px  2px 0 #0a0a0a,
+        0 2px 0 #0a0a0a;
+      user-select:none;
+      padding-left:calc((100% - min(88vw,520px))/2);
+    }
+    #scoresOverlay .list{
+      width:100%; max-width:min(88vw, 520px);
+      height:100%; overflow:auto; padding:4px 8px 24px 8px;
+    }
+    #scoresOverlay .item{
+      display:grid; grid-template-columns: 48px 1fr auto; align-items:center;
+      gap:10px; padding:8px 2px;
+    }
+    #scoresOverlay .item + .item{ border-top:1px dashed rgba(255,255,255,.18) }
+    #scoresOverlay .bird{
+      width:42px; height:auto; image-rendering:pixelated;
+      filter:drop-shadow(0 1px 0 rgba(0,0,0,.25));
+      user-select:none; -webkit-user-drag:none;
+    }
+    #scoresOverlay .name{
+      color:#ffffff; font-weight:600; letter-spacing:.4px;
+      font-size:clamp(14px, 2.4vh, 18px);
+      text-shadow:
+        -1px -1px 0 #0a0a0a, 1px -1px 0 #0a0a0a,
+        -1px  1px 0 #0a0a0a, 1px  1px 0 #0a0a0a;
+      white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+    }
+    #scoresOverlay .pts{
+      color:#ffffff; font-weight:900;
+      font-size:clamp(16px, 2.6vh, 20px);
+      text-shadow:
+        -1px -1px 0 #0a0a0a, 1px -1px 0 #0a0a0a,
+        -1px  1px 0 #0a0a0a, 1px  1px 0 #0a0a0a;
+    }
+    #scoresOverlay .hint{
+      position:absolute; left:0; right:0; bottom:2vh; text-align:center;
+      color:#ffffffcc; font-size:clamp(12px, 2vh, 14px);
+      text-shadow:-1px -1px 0 #0a0a0a,1px -1px 0 #0a0a0a,-1px 1px 0 #0a0a0a,1px 1px 0 #0a0a0a;
+      user-select:none;
+    }
   `;
   document.head.appendChild(st);
 
   scoresOverlay = document.createElement('div');
   scoresOverlay.id = 'scoresOverlay';
   scoresOverlay.innerHTML = `
-    <div class="backdrop"></div>
-    <div class="card">
-      <h3 class="title">Top 10</h3>
+    <div class="wrap" id="scoresWrap">
+      ${UI_ASSETS.title ? `<img class="logo" src="${UI_ASSETS.title}" alt="logo">` : `<div style="height:56px"></div>`}
+      <div class="title">Ranking</div>
       <div id="scoresList" class="list"></div>
-      <div class="row"><button id="btnScoresBack" class="btn">Voltar</button></div>
+      <div class="hint">Toque para voltar</div>
     </div>
   `;
   document.body.appendChild(scoresOverlay);
 
-  document.getElementById('btnScoresBack')?.addEventListener('click', () => {
+  scoresOverlay.addEventListener('click', () => {
     hideScoresOverlay();
     showStartOverlay();
   });
+
+  const wrap = scoresOverlay.querySelector('#scoresWrap');
+  wrap.addEventListener('click', (e) => e.stopPropagation());
 }
+
 async function showScoresOverlay() {
+  hideStartOverlay();
+
+  ensureScoresOverlay();
   scoresOverlay?.classList.add('show');
   uiLocked = true;
+
   startBgLoop();
 
   const list = document.getElementById('scoresList');
-  if (list) list.innerHTML = `<div class="muted">Carregando…</div>`;
+  if (list) list.innerHTML = `<div class="name" style="opacity:.8;padding:10px 0">Carregando…</div>`;
 
   const rows = await fetchTop10FromSupabase();
   renderTop10ListTo(list, rows);
 }
-function hideScoresOverlay() { scoresOverlay?.classList.remove('show'); uiLocked = false; }
+
+function hideScoresOverlay() {
+  scoresOverlay?.classList.remove('show');
+  uiLocked = false;
+}
+
 function renderTop10ListTo(listEl, rows) {
   if (!listEl) return;
-  listEl.innerHTML = rows?.length
-    ? rows.map((r, i) => `
-        <div class="item">
-          <div class="rank">#${i + 1}</div>
-          <div>
-            <div>${r.player_name || 'Anônimo'}</div>
-            ${r.played_at ? `<div class="muted" style="font-size:12px">${new Date(r.played_at).toLocaleString()}</div>` : ''}
-          </div>
-          <div class="pts">${r.score ?? 0}</div>
-        </div>
-      `).join('')
-    : `<div class="muted">Sem scores no servidor ainda.</div>`;
+  const birdIcon = UI_ASSETS.heroBird || (cfg.assets.birdFrames?.[0] || '');
+  if (!rows?.length) {
+    listEl.innerHTML = `<div class="name" style="opacity:.85;padding:12px 2px">Sem scores no servidor ainda.</div>`;
+    return;
+  }
+  listEl.innerHTML = rows.map((r) => `
+    <div class="item">
+      ${birdIcon ? `<img class="bird" src="${birdIcon}" alt="">` : `<div></div>`}
+      <div class="name">${(r.player_name || 'Anônimo').replace(/[<>&]/g, s => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[s]))}</div>
+      <div class="pts">${r.score ?? 0}</div>
+    </div>
+  `).join('');
 }
 
 // ================== OVERLAY RANK (GAME OVER) ==================
@@ -958,7 +1313,6 @@ function ensureRankOverlay() {
   `;
   document.body.appendChild(rankOverlay);
 
-  // clique em qualquer lugar finaliza
   rankOverlay.addEventListener('click', finalizeAndReset);
 }
 function showRankOverlay(finalScore, rankPos) {
@@ -983,7 +1337,6 @@ async function handleGameOverSave() {
 
 // ================== RESET/FINALIZAR ==================
 function finalizeAndReset() {
-  // limpa tudo
   try { localStorage.clear(); } catch { }
   try { sessionStorage.clear(); } catch { }
   try {
@@ -992,7 +1345,6 @@ function finalizeAndReset() {
     }
   } catch { }
 
-  // reseta estado de jogo
   stopGameLoop();
   stopSpawning();
   running = false;
@@ -1002,7 +1354,7 @@ function finalizeAndReset() {
 
   hideRankOverlay();
   showStartOverlay();
-  startBgLoop();
+  startBgLoop(); // volta a animar BG nos menus
 }
 
 // ================== HELPERS ==================
