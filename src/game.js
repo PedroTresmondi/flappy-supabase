@@ -1245,7 +1245,7 @@ function ensureScoresOverlay() {
       -2px  2px 0 #0a0a0a, 2px  2px 0 #0a0a0a,
       0 2px 0 #0a0a0a;
     user-select:none;
-    padding-left:calc((100% - min(88vw,520px))/2);
+    padding-left:calc((100% - min(30vw,520px))/2);
   }
   #scoresOverlay .list{
     width:100%; max-width:min(88vw, 520px);
