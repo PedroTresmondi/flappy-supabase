@@ -1049,19 +1049,12 @@ async function salvarScoreNoSupabase(pontos) {
   if (!supabase) return;
 
   const player = getLocalPlayer();
-
-  // >>> NOVO: descobre o nome do grupo conforme as faixas atuais da config
-  const prizeGroup = groupNameForScore(Number(pontos || 0), cfg.prizes || []);
-
   const payload = {
     run_id: String(runId),
     player_name: player.nome || 'Anônimo',
     score: Number(pontos),
     played_at: new Date().toISOString(),
-
-    // >>> NOVO: salva o nome do grupo na tabela
-    prize_group: prizeGroup, // (texto) ex.: "Grupo A", "Camiseta", etc.
-
+    prize_group: determinePrizeGroup?.(Number(pontos)) || null, // se você tiver essa função
     meta: {
       startedAt: runStartISO,
       durationMs: Math.max(0, Math.round(performance.now() - runStartPerf)),
@@ -1071,9 +1064,13 @@ async function salvarScoreNoSupabase(pontos) {
     },
   };
 
-  const { error } = await supabase.from('scores').insert([payload]);
+  const { error } = await supabase.from(SUPABASE_SCORES_TABLE).insert([payload]);
   if (error) throw error;
+
+  // >>> invalida o cache do TOP10 (vai forçar refresh no próximo open)
+  invalidateTop10Cache();
 }
+
 
 
 
@@ -1176,6 +1173,47 @@ function showStartOverlay() {
 }
 function hideStartOverlay() { startOverlay?.classList.remove('show'); uiLocked = false; }
 
+// ---- TOP10 CACHE ----
+const TOP10_CACHE_KEY = `flappy:top10:${CONFIG_SLUG}`;
+const TOP10_TTL_MS = 2 * 60 * 1000; // 2 minutos
+
+let top10CacheMem = null;
+
+function top10ComputeSig(rows) {
+  return (rows || [])
+    .map(r => `${r.player_name || ''}|${r.score || 0}|${r.played_at || ''}`)
+    .join('#');
+}
+function readTop10Cache() {
+  // tenta memória
+  if (top10CacheMem && (Date.now() - (top10CacheMem.ts || 0)) < TOP10_TTL_MS) {
+    return top10CacheMem;
+  }
+  // tenta localStorage
+  try {
+    const raw = localStorage.getItem(TOP10_CACHE_KEY);
+    if (!raw) return null;
+    const obj = JSON.parse(raw);
+    if (!obj || !obj.rows) return null;
+    if ((Date.now() - (obj.ts || 0)) > TOP10_TTL_MS) return null; // expirado
+    top10CacheMem = obj;
+    return obj;
+  } catch {
+    return null;
+  }
+}
+function writeTop10Cache(rows) {
+  const obj = { ts: Date.now(), rows: rows || [], sig: top10ComputeSig(rows) };
+  top10CacheMem = obj;
+  try { localStorage.setItem(TOP10_CACHE_KEY, JSON.stringify(obj)); } catch { }
+  return obj;
+}
+function invalidateTop10Cache() {
+  top10CacheMem = null;
+  try { localStorage.removeItem(TOP10_CACHE_KEY); } catch { }
+}
+
+
 // ================== OVERLAY TOP 10 ==================
 function ensureScoresOverlay() {
   if (document.getElementById('scoresStyles')) return;
@@ -1233,7 +1271,7 @@ function ensureScoresOverlay() {
   }
   #scoresOverlay .pts{
     color:#ffffff; font-weight:900;
-    font-size:clamp(16px, 2.6vh, 20px);
+    font-size:clamp(16px, 3.6vh, 36px);
     text-shadow:
       -1px -1px 0 #0a0a0a, 1px -1px 0 #0a0a0a,
       -1px  1px 0 #0a0a0a, 1px  1px 0 #0a0a0a;
@@ -1255,7 +1293,7 @@ function ensureScoresOverlay() {
   scoresOverlay.innerHTML = `
     <div class="wrap" id="scoresWrap">
       ${UI_ASSETS.title ? `<img class="logo" src="${UI_ASSETS.title}" alt="logo">` : `<div style="height:56px"></div>`}
-      <div class="title">Ranking</div>
+      <div class="title">Ranking TOP 10</div>
       <div id="scoresList" class="list"></div>
       <div class="hint">Toque para voltar</div>
     </div>
@@ -1292,11 +1330,34 @@ async function showScoresOverlay() {
   startBgLoop();
 
   const list = document.getElementById('scoresList');
-  if (list) list.innerHTML = `<div class="name" style="opacity:.8;padding:10px 0">Carregando…</div>`;
+  if (!list) return;
 
-  const rows = await fetchTop10FromSupabase();
-  renderTop10ListTo(list, rows);
+  // 1) tenta usar cache
+  const cache = readTop10Cache();
+  if (cache && cache.rows?.length) {
+    renderTop10ListTo(list, cache.rows);
+
+    // cache ainda fresco? nem consulta o servidor
+    if ((Date.now() - cache.ts) < TOP10_TTL_MS) return;
+  } else {
+    list.innerHTML = `<div class="name" style="opacity:.8;padding:10px 0">Carregando…</div>`;
+  }
+
+  // 2) busca do servidor; se falhar, mantém cache antigo
+  try {
+    const rows = await fetchTop10FromSupabase();
+    writeTop10Cache(rows);
+    renderTop10ListTo(list, rows);
+  } catch (e) {
+    console.warn('[Top10] erro ao buscar, usando cache se houver:', e);
+    if (cache?.rows?.length) {
+      renderTop10ListTo(list, cache.rows);
+    } else {
+      list.innerHTML = `<div class="name" style="opacity:.85;padding:12px 2px">Sem scores no servidor ainda.</div>`;
+    }
+  }
 }
+
 
 function hideScoresOverlay() {
   scoresOverlay?.classList.remove('show');
