@@ -379,7 +379,6 @@ function buildKeyboard(root) {
   ]));
   root.appendChild(makeRow([
     { type: "space", label: "Espaço", cls: "vk-space" },
-    { type: "clear", label: "Limpar", cls: "vk-wide vk-danger" },
   ]));
 }
 function makeRow(items) {

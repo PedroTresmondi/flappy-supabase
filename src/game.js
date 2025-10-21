@@ -1,12 +1,30 @@
-// src/game.js
+
 "use strict";
 
+/* =====================================================================================
+   VISÃO GERAL DO FLUXO
+   1) boot()        -> instala fonte, carrega config, prepara canvas/assets/controles, cria overlays e mostra tela inicial.
+   2) startGame()   -> valida cadastro, reseta estado, para BG passivo e inicia o loop tick().
+   3) tick()        -> desenha BG, HUD, pássaro, move/colide canos, aplica física e trata morte.
+   4) startDeathSequence() -> congela BG/canos, faz flash+freeze, pássaro cai; ao sair da tela: gameOver().
+   5) gameOver()    -> encerra loop, salva score e busca ranking em paralelo, abre overlay de rank imediatamente.
+   6) finalizeAndReset()   -> limpa estado e volta para tela inicial com BG passivo.
+
+   ANOTAÇÕES
+   - Dimensões alvo: 1080×1920 (o jogo escala uniformemente a partir de 360×640).
+   - Controles padrão: Space/ArrowUp/KeyX e toque/pointer.
+   ===================================================================================== */
+
+/* ============================= IMPORTS ============================================= */
 import { supabase } from './supabase';
-import { ensureCadastro, getLocalPlayer, showCadastroModal } from './ui/cadastroModal';
+import { ensureCadastro, getLocalPlayer } from './ui/cadastroModal';
 import { installPixellari, waitPixellari, applyPixellariToCfg } from './ui/fontLoader';
 
-// ================== BASE/ASSETS (GitHub Pages friendly) ==================
-const BASE = (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.BASE_URL) ? import.meta.env.BASE_URL : '/';
+/* ============================= BASE & PATHS ======================================== */
+// Compatível com GitHub Pages: prefixa assets com BASE
+const BASE = (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.BASE_URL)
+  ? import.meta.env.BASE_URL
+  : '/';
 const joinBase = (p) => {
   if (!p) return '';
   const s = String(p);
@@ -14,20 +32,26 @@ const joinBase = (p) => {
   return BASE + s.replace(/^\//, '');
 };
 
-// ================== CONSTANTES ==================
+/* ============================= CONSTANTES EDITÁVEIS ================================= */
+// Storage/local config
 const KEY = 'flappy:config';
-const SUPABASE_SCORES_TABLE = 'scores';
-const SUPABASE_CONFIG_TABLE = 'flappy_config';
 const CONFIG_SLUG = localStorage.getItem('flappy:configSlug') || 'default';
 
-// Mundo lógico base (360×640) e alvo visual (1080×1920)
+// Supabase
+const SUPABASE_SCORES_TABLE = 'scores';
+const SUPABASE_CONFIG_TABLE = 'flappy_config';
+
+// Mundo base (lógico) e alvo visual (render)
 const BASE_W = 360, BASE_H = 640;
 const TARGET_W = 1080, TARGET_H = 1920;
 
-let saveOnce = false;
-let savePromise = null;
+// Assets padrão (devem existir em public/assets/img/)
+const DEFAULT_SFX = {
+  flap: 'assets/sounds/sfx_wing.wav',
+  score: 'assets/sounds/sfx_point.wav',
+  hit: 'assets/sounds/sfx_hit.wav',
+};
 
-// assets padrão (devem existir em public/assets/img/)
 const DEFAULT_ASSETS = {
   birdFrames: [
     'assets/img/flappybird1.png',
@@ -39,7 +63,7 @@ const DEFAULT_ASSETS = {
   bg: 'assets/img/bg_2160x1920.png'
 };
 
-// UI do overlay inicial
+// UI estática
 const UI_ASSETS = {
   title: joinBase('assets/img/logo.png'),
   heroBird: joinBase('assets/img/flappybird.png'),
@@ -48,36 +72,14 @@ const UI_ASSETS = {
   ranking: joinBase('assets/img/ranking.png'),
 };
 
-// ================== CONFIG ==================
-async function fetchRemoteConfigFromSupabase(slug = CONFIG_SLUG) {
-  if (!supabase) return null;
-  try {
-    const { data, error } = await supabase
-      .from(SUPABASE_CONFIG_TABLE)
-      .select('data')
-      .eq('slug', String(slug || 'default'))
-      .maybeSingle();
-    if (error) { console.warn('[Supabase] config erro:', error); return null; }
-    return data?.data || null;
-  } catch (e) {
-    console.warn('[Supabase] config exception:', e);
-    return null;
-  }
-}
-
-// sons padrão
-const DEFAULT_SFX = {
-  flap: 'assets/sounds/sfx_wing.wav',
-  score: 'assets/sounds/sfx_point.wav',
-  hit: 'assets/sounds/sfx_hit.wav',
-};
-
-
+/* ============================= CONFIG PADRÃO ======================================== */
 const DEFAULT_CONFIG = {
   board: { width: BASE_W, height: BASE_H, background: '#70c5ce' },
+
   assets: { ...DEFAULT_ASSETS, sfx: { flap: '', score: '', hit: '' } },
-  bg: { parallaxFactor: 0.5, fixedPxPerSec: 0 },
   sfx: { flap: DEFAULT_SFX.flap, score: DEFAULT_SFX.score, hit: DEFAULT_SFX.hit },
+  bg: { parallaxFactor: 0.5, fixedPxPerSec: 0 },
+
   bird: {
     width: 34, height: 24,
     startXPercent: 12.5, startYPercent: 50,
@@ -89,36 +91,66 @@ const DEFAULT_CONFIG = {
     },
     flapAnim: { enabled: true, durationMs: 1000, fps: 12 }
   },
+
   physics: { gravity: 0.4 },
+
   pipes: {
     width: 64, height: 512, scrollSpeed: 2, gapPercent: 25,
     randomBasePercent: 25, randomRangePercent: 50,
     autoStretchToEdges: false, edgeOverflowPx: 0,
+    // opcional: minHorizontalSpacingPx (se ausente, usa cálculo dinâmico)
   },
+
   difficulty: {
-    rampEnabled: false, speedPerScore: 0.05, minGapPercent: 18, gapStepPerScore: 0.2,
-    timeRampEnabled: true, timeStartDelayMs: 0,
-    timeSpeedPerSec: 0.03, timeMaxExtraSpeed: 5, timeGapStepPerSec: 0.02,
+    // por score
+    rampEnabled: false,
+    speedPerScore: 0.05,
+    minGapPercent: 18,
+    gapStepPerScore: 0.2,
+
+    // por tempo
+    timeRampEnabled: true,
+    timeStartDelayMs: 0,
+    timeSpeedPerSec: 0.03,
+    timeMaxExtraSpeed: 5,
+    timeGapStepPerSec: 0.02,
+
+    // degrau incremental (em px/frame) a cada X ms (somado ao scroll base)
     stepEveryMs: 2000,
     stepAddPxPerFrame: 0.30,
     stepMaxExtraPxPerFrame: 6,
-    timeSpeedPerSec: 0.03, timeMaxExtraSpeed: 5, timeGapStepPerSec: 0.02
-
   },
+
   prizes: [
     { min: 1, max: 10, name: 'Grupo A' },
     { min: 10, max: 15, name: 'Grupo B' },
     { min: 15, max: 25, name: 'Grupo C' },
   ],
-  spawn: { intervalMs: 1500 },
+
+  spawn: { intervalMs: 1500 }, // mantido por compat.; spawner usa spacing dinâmico
   scoring: { pointsPerPipe: 0.5 },
+
   ui: {
-    font: '45px sans-serif', scoreColor: '#ffffff',
-    gameOverText: 'GAME OVER', gameOverFont: '45px sans-serif', gameOverColor: '#ffffff'
+    font: '45px sans-serif',
+    scoreColor: '#ffffff',
+    gameOverText: 'GAME OVER',
+    gameOverFont: '45px sans-serif',
+    gameOverColor: '#ffffff'
   },
-  controls: { jump: ['Space', 'ArrowUp', 'KeyX'], minFlapIntervalMs: 120, allowHoldToFlap: false },
-  gameplay: { restartOnJump: false, gracePeriodMs: 0, pauseKey: 'KeyP' },
-  // colisão pixel-perfect
+
+  controls: {
+    jump: ['Space', 'ArrowUp', 'KeyX'],
+    minFlapIntervalMs: 120,
+    allowHoldToFlap: false
+  },
+
+  gameplay: {
+    restartOnJump: false,
+    gracePeriodMs: 0,
+    pauseKey: 'KeyP'
+  },
+
+  // Colisão pixel-perfect
   collision: {
     birdPixelPerfect: true,
     alphaThreshold: 10,
@@ -126,7 +158,8 @@ const DEFAULT_CONFIG = {
     pipeFallbackInsetPx: 6,
     debug: false
   },
-  // Sequência de morte
+
+  // Efeitos de morte
   death: {
     flashMs: 140,
     freezeMs: 1000,
@@ -135,112 +168,74 @@ const DEFAULT_CONFIG = {
   }
 };
 
-// ================== ESTADO ==================
+/* ============================= ESTADO GLOBAL ======================================== */
 let cfg = structuredClone(DEFAULT_CONFIG);
+
 let canvas, ctx;
 let topPipeImg = null, bottomPipeImg = null, bgImg = null;
 let birdImgs = [], SFX = {};
 
-// Máscaras de colisão pixel-perfect dos canos
-let pipeMaskTop = null, pipeMaskBottom = null;
-
-// offscreen p/ raster do pássaro rotacionado
-let collCanvas = null, collCtx = null;
+let pipeMaskTop = null, pipeMaskBottom = null;     // máscaras para colisão
+let collCanvas = null, collCtx = null;             // canvas offscreen p/ colisão
 
 let bird, velocityY = 0, pipeArray = [];
 let isGameOver = false, score = 0;
+
 let allowedJumpKeys = new Set(), spawnTimerId = null;
 let birdTiltDeg = 0, flapAnimStart = 0, flapAnimEnd = 0;
+
 let gameStarted = false, graceUntilTs = 0, paused = false, lastTs = 0;
 let activeTimeMs = 0, timeRampStartTs = 0, lastFlapTs = -1;
+
 let uiLocked = false;
 
 let runId = null, runStartISO = null, runStartPerf = 0;
+
 let startOverlay = null, scoresOverlay = null, rankOverlay = null;
 
-// loops
-let rafId = 0, running = false;
+let rafId = 0, running = false;                     // loop principal
+let rafBgId = 0, bgLooping = false, lastBgOnlyTs = 0; // loop leve do BG (telas)
+let bgScrollX = 0, bgFrozen = false;                // BG e congelamento na morte
 
-// BG scroll
-let bgScrollX = 0;
-// NOVO: bg congelado durante morte
-let bgFrozen = false;
-
-// loop leve do BG para telas
-let rafBgId = 0, bgLooping = false, lastBgOnlyTs = 0;
-
-// NOVO: estado da morte
 let dying = false;
-let death = {
-  active: false,
-  hitTs: 0,
-  flashEnd: 0,
-  freezeUntil: 0,
-  holdY: 0,
-  holdTilt: 0
-};
+let death = { active: false, hitTs: 0, flashEnd: 0, freezeUntil: 0, holdY: 0, holdTilt: 0 };
 
-function ensureHudDom() {
-  ensureHudStyles();
-  if (hudWrap) return;
-  hudWrap = document.createElement('div');
-  hudWrap.id = 'hudWrap';
-  hudWrap.innerHTML = `<div id="hudScore" class="score">0</div>`;
-  document.body.appendChild(hudWrap);
-  hudScoreEl = hudWrap.querySelector('#hudScore');
-  updateHudOverlayRect(); // posiciona sobre o canvas
-}
+let saveOnce = false; // evita salvar duas vezes a mesma run
+let savePromise = null;
 
-function applyHudCssFromConfig() {
-  // opcional: ler do cfg.ui.scoreCss (se quiser controlar via config)
-  const s = cfg?.ui?.scoreCss || {};
-  if (!hudWrap) return;
-  const el = hudWrap; // usamos CSS vars no próprio wrap
-
-  if (s.topPx != null) el.style.setProperty('--hud-score-top', `${s.topPx}px`);
-  if (s.leftPx != null) el.style.setProperty('--hud-score-left', `${s.leftPx}px`);
-  if (s.font) el.style.setProperty('--hud-score-font', s.font);
-  if (s.color) el.style.setProperty('--hud-score-color', s.color);
-  if (s.letterSpacing) el.style.setProperty('--hud-score-letter-spacing', s.letterSpacing);
-  if (s.shadow) el.style.setProperty('--hud-score-shadow', s.shadow);
-}
-
-
-// ================== BOOT ==================
+/* ============================= BOOT / STARTUP ======================================= */
 export async function boot() {
+  // 1) fonte para DOM + canvas
   installPixellari();
   await waitPixellari();
 
+  // 2) configs: local/file/remote -> escala p/ alvo -> fonte no HUD
   cfg = await loadConfigSanitized();
   cfg = forceBoardToTarget(cfg, TARGET_W, TARGET_H);
   cfg = applyUniformScale(cfg, BASE_W, BASE_H);
   cfg = applyPixellariToCfg(cfg);
 
+  // 3) preparo de runtime
   setupCanvas();
-  hideHud();
-  ensureHudDom();
-
-  applyHudCssFromConfig();
   await loadAssets();
   setupControls();
-
+  disableRightClickGlobally();
+  // 4) overlays (start, top10, rank)
   ensureStartOverlay();
   ensureScoresOverlay();
   ensureRankOverlay();
+  ensureScoreHud();
 
+  // 5) tela inicial + BG passivo
   showStartOverlay();
   startBgLoop();
 }
 
-
-
-// ================== CICLO DE VIDA ==================
+/* ============================= CICLO DE VIDA/EXECUÇÃO =============================== */
 function resetRunState() {
   pipeArray = [];
   isGameOver = false;
   score = 0;
-  lastScoreRendered = -1;
-  if (hudScoreEl) hudScoreEl.textContent = '0';
 
   runId = (crypto?.randomUUID?.() || ('run-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8)));
   runStartISO = new Date().toISOString();
@@ -254,28 +249,25 @@ function resetRunState() {
   gameStarted = false; graceUntilTs = 0; paused = false; lastTs = 0;
   activeTimeMs = 0; timeRampStartTs = 0; lastFlapTs = -1;
 
-  bgScrollX = 0;
-  bgFrozen = false;
+  bgScrollX = 0; bgFrozen = false;
 
-  // reset death
-  dying = false;
-  death.active = false;
+  dying = false; death.active = false;
+
+  // libera salvamento nesta nova run
+  saveOnce = false; savePromise = null;
 }
 
 export async function startGame() {
-  showHud();
-  hideStartOverlay();
-  hideScoresOverlay();
-  hideRankOverlay();
-
+  hideStartOverlay(); hideScoresOverlay(); hideRankOverlay();
   await withUiLock(ensureCadastro());
 
-  stopBgLoop();
+  stopBgLoop();          // sai do BG passivo
   resetRunState();
-  stopSpawning();
+  stopSpawning();        // garante sem timers antigos
   stopGameLoop();
 
   running = true;
+  showScoreHud(true);
   rafId = requestAnimationFrame(tick);
 }
 
@@ -287,29 +279,39 @@ export function gameOver() {
   stopSpawning();
   stopGameLoop();
 
-  // IMPORTANTE: não recomeça bg loop aqui -> fundo fica estático no Game Over
-  handleGameOverSave().catch(() => { });
+  // Mantém BG parado no Game Over
+  handleGameOverSave().catch(() => { /* silencioso */ });
 }
 
-function stopGameLoop() {
-  running = false;
-  if (rafId) cancelAnimationFrame(rafId);
-  rafId = 0;
-}
-function stopSpawning() {
-  if (spawnTimerId) clearTimeout(spawnTimerId);
-  spawnTimerId = null;
+function stopGameLoop() { running = false; if (rafId) cancelAnimationFrame(rafId); rafId = 0; }
+function stopSpawning() { if (spawnTimerId) clearTimeout(spawnTimerId); spawnTimerId = null; }
+
+/* ============================= CONFIG / CARREGAMENTO ================================= */
+async function fetchRemoteConfigFromSupabase(slug = CONFIG_SLUG) {
+  if (!supabase) return null;
+  try {
+    const { data, error } = await supabase
+      .from(SUPABASE_CONFIG_TABLE)
+      .select('data')
+      .eq('slug', String(slug || 'default'))
+      .maybeSingle();
+    if (error) { console.warn('[Supabase] config erro:', error); return null; }
+    return data?.data || null;
+  } catch (e) {
+    console.warn('[Supabase] config exception:', e); return null;
+  }
 }
 
-// ================== CONFIG / SANITIZAÇÃO ==================
 async function loadConfigSanitized() {
   let merged = structuredClone(DEFAULT_CONFIG);
 
+  // arquivo de config (sem cache)
   try {
     const res = await fetch(joinBase('/flappy-config.json'), { cache: 'no-store' });
     if (res.ok) merged = deepMerge(merged, await res.json() || {});
   } catch { }
 
+  // localStorage (ignora assets para evitar CORS/caminhos ruins)
   try {
     const raw = localStorage.getItem(KEY);
     if (raw) {
@@ -318,6 +320,7 @@ async function loadConfigSanitized() {
     }
   } catch { }
 
+  // remoto (Supabase)
   try {
     const remote = await fetchRemoteConfigFromSupabase();
     if (remote) merged = deepMerge(merged, remote);
@@ -342,7 +345,7 @@ function sanitizeAssets(a) {
   out.bottomPipe = normalizeAssetPath(a?.bottomPipe) || DEFAULT_ASSETS.bottomPipe;
   out.bg = normalizeAssetPath(a?.bg) || DEFAULT_ASSETS.bg || '';
 
-  // sons (normaliza e aplica defaults)
+  // sons (normaliza + aplica defaults)
   const aSfx = a?.sfx || {};
   out.sfx = {
     flap: normalizeAssetPath(aSfx.flap) || normalizeAssetPath(DEFAULT_SFX.flap),
@@ -374,12 +377,11 @@ function deepMerge(a, b) {
 }
 const unique = (arr) => [...new Set(arr)];
 
-// ================== ESCALA PARA 1080×1920 ==================
+/* ============================= ESCALA 1080×1920 ===================================== */
 function forceBoardToTarget(cfgIn, w, h) {
   const cfg = structuredClone(cfgIn);
   cfg.board = cfg.board || {};
-  cfg.board.width = w;
-  cfg.board.height = h;
+  cfg.board.width = w; cfg.board.height = h;
   return cfg;
 }
 function applyUniformScale(cfgIn, baseW, baseH) {
@@ -419,7 +421,7 @@ function scaleFontSpec(spec, S) {
   return spec.replace(/(\d+(\.\d+)?)px/ig, (_, n) => `${Math.round(parseFloat(n) * S)}px`);
 }
 
-// ================== CANVAS / LAYOUT FULLSCREEN ==================
+/* ============================= CANVAS / LAYOUT FULLSCREEN =========================== */
 function setupCanvas() {
   canvas = document.getElementById('board') || Object.assign(document.createElement('canvas'), { id: 'board' });
   if (!canvas.isConnected) document.body.appendChild(canvas);
@@ -447,7 +449,6 @@ function setupCanvas() {
   layoutCanvasCover();
   window.addEventListener('resize', layoutCanvasCover);
 }
-
 function layoutCanvasCover() {
   const vw = Math.max(1, window.innerWidth);
   const vh = Math.max(1, window.innerHeight);
@@ -460,21 +461,10 @@ function layoutCanvasCover() {
   canvas.style.height = cssH + 'px';
   canvas.style.left = Math.round((vw - cssW) / 2) + 'px';
   canvas.style.top = Math.round((vh - cssH) / 2) + 'px';
-
-  updateHudOverlayRect()
-}
-function updateHudOverlayRect() {
-  if (!canvas || !hudWrap) return;
-  const r = canvas.getBoundingClientRect();
-  Object.assign(hudWrap.style, {
-    left: r.left + 'px',
-    top: r.top + 'px',
-    width: r.width + 'px',
-    height: r.height + 'px',
-  });
 }
 
-// ================== ASSETS / MÁSCARAS DE CANO ==================
+/* ============================= ASSETS & MÁSCARAS ==================================== */
+
 class SoundPool {
   constructor(src, size = 4) {
     this.src = src || '';
@@ -495,12 +485,12 @@ class SoundPool {
     const a = this.pool[this.idx];
     this.idx = (this.idx + 1) % this.pool.length;
     try {
-      a.currentTime = 0; // reinicia para toques rápidos
+      // reinicia para cliques rápidos
+      a.currentTime = 0;
       a.play().catch(() => { });
     } catch { }
   }
 }
-
 
 
 function loadAssets() {
@@ -515,6 +505,7 @@ function loadAssets() {
       }
     };
 
+    // frames do pássaro
     birdImgs = [];
     frames.forEach(src => {
       const im = new Image();
@@ -525,24 +516,20 @@ function loadAssets() {
       birdImgs.push(im);
     });
 
+    // canos + máscaras
     topPipeImg = new Image();
     topPipeImg.crossOrigin = "anonymous";
-    topPipeImg.onload = () => {
-      try { pipeMaskTop = buildPipeMask(topPipeImg); } catch (e) { console.warn('mask top err:', e); }
-      done();
-    };
+    topPipeImg.onload = () => { try { pipeMaskTop = buildPipeMask(topPipeImg); } catch (e) { console.warn('mask top err:', e); } done(); };
     topPipeImg.onerror = () => { console.warn('[assets] topPipe falhou:', cfg.assets.topPipe); topPipeImg = null; done(); };
     topPipeImg.src = cfg.assets.topPipe;
 
     bottomPipeImg = new Image();
     bottomPipeImg.crossOrigin = "anonymous";
-    bottomPipeImg.onload = () => {
-      try { pipeMaskBottom = buildPipeMask(bottomPipeImg); } catch (e) { console.warn('mask bottom err:', e); }
-      done();
-    };
+    bottomPipeImg.onload = () => { try { pipeMaskBottom = buildPipeMask(bottomPipeImg); } catch (e) { console.warn('mask bottom err:', e); } done(); };
     bottomPipeImg.onerror = () => { console.warn('[assets] bottomPipe falhou:', cfg.assets.bottomPipe); bottomPipeImg = null; done(); };
     bottomPipeImg.src = cfg.assets.bottomPipe;
 
+    // BG
     bgImg = null;
     const bgUrl = cfg.assets.bg;
     if (bgUrl) {
@@ -556,6 +543,7 @@ function loadAssets() {
       done();
     }
 
+    // SFX
     SFX = {
       flap: cfg.assets?.sfx?.flap ? new SoundPool(cfg.assets.sfx.flap, 6) : null,
       score: cfg.assets?.sfx?.score ? new SoundPool(cfg.assets.sfx.score, 4) : null,
@@ -586,13 +574,10 @@ function applyDynamicBirdAutosize() {
   const targetH = Math.round(canvas.height * (finalPercent / 100));
   const targetW = Math.max(1, Math.round(targetH * ratio));
 
-  cfg.bird.width = targetW;
-  cfg.bird.height = targetH;
-
+  cfg.bird.width = targetW; cfg.bird.height = targetH;
   if (bird) { bird.width = targetW; bird.height = targetH; }
 }
 
-// Gera máscara binária (1=opaco, 0=transparente) para colisão pixel-perfect
 function buildPipeMask(img) {
   const w = Math.max(1, cfg.pipes.width | 0);
   const h = Math.max(1, cfg.pipes.height | 0);
@@ -610,13 +595,14 @@ function buildPipeMask(img) {
   const data = imgData.data;
   const t = Math.max(0, cfg.collision?.pipeAlphaThreshold ?? 10);
   const mask = new Uint8Array(w * h);
+
   for (let i = 0, j = 0; j < mask.length; j++, i += 4) {
     mask[j] = data[i + 3] > t ? 1 : 0;
   }
   return { mask, w, h };
 }
 
-// ================== CONTROLES ==================
+/* ============================= CONTROLES ============================================ */
 function isTypingTarget(ev) {
   const el = ev?.target;
   if (!(el instanceof Element)) return false;
@@ -627,14 +613,12 @@ function isTypingTarget(ev) {
 function preventScrollForGameKeys(e) {
   if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code)) e.preventDefault();
 }
-
 function setupControls() {
   allowedJumpKeys = new Set(cfg.controls.jump);
 
   document.addEventListener('keydown', (e) => {
     if (e.code === 'F9') { try { localStorage.removeItem(KEY); } catch { } location.reload(); return; }
-    if (isTypingTarget(e)) return;
-    if (uiLocked) return;
+    if (isTypingTarget(e) || uiLocked) return;
 
     preventScrollForGameKeys(e);
 
@@ -645,8 +629,15 @@ function setupControls() {
   }, { capture: true });
 
   window.addEventListener('pointerdown', (e) => {
+    // não interfere em inputs/menus
     if (isTypingTarget(e)) return;
     if (uiLocked) return;
+
+    if (e.pointerType === 'mouse' && (e.button === 0 || e.buttons === 1)) {
+      return;
+    }
+
+    // Touch/pen (ou outros botões de mouse, se quiser manter) viram um "jump"
     onJumpKey({ code: cfg.controls.jump?.[0] || 'Space', repeat: false });
   }, { capture: true });
 
@@ -655,17 +646,13 @@ function setupControls() {
 }
 
 function onJumpKey(e) {
-  if (!running) return;
-  if (!allowedJumpKeys.has(e.code)) return;
-  if (paused) return;
-  if (dying) return; // NOVO: sem flaps durante a morte
+  if (!running || !allowedJumpKeys.has(e.code) || paused || dying) return;
+  if (isGameOver) return;
 
   const now = performance.now();
   const minInt = Math.max(0, cfg.controls.minFlapIntervalMs || 0);
   if (lastFlapTs >= 0 && now - lastFlapTs < minInt) return;
   lastFlapTs = now;
-
-  if (isGameOver) return;
 
   if (!gameStarted) {
     gameStarted = true;
@@ -692,7 +679,7 @@ function onJumpKey(e) {
   }
 }
 
-// ================== MORTE / FX ==================
+/* ============================= MORTE / FX =========================================== */
 function startDeathSequence() {
   if (dying || isGameOver) return;
   dying = true;
@@ -704,11 +691,10 @@ function startDeathSequence() {
   death.holdTilt = birdTiltDeg;
   velocityY = 0;
 
-  stopSpawning();       // para gerar novos canos
-  bgFrozen = true;      // NOVO: congela o BG imediatamente
+  stopSpawning();  // não gera novos canos
+  bgFrozen = true; // congela BG
   try { SFX.hit?.play(); } catch { }
 }
-
 function drawDeathFlash(nowTs) {
   if (!death.active) return;
   const end = death.flashEnd || 0;
@@ -721,7 +707,7 @@ function drawDeathFlash(nowTs) {
   ctx.restore();
 }
 
-// ================== LOOP ==================
+/* ============================= LOOP PRINCIPAL ======================================= */
 function tick(ts) {
   if (!running) return;
 
@@ -733,7 +719,6 @@ function tick(ts) {
   lastTs = nowTs;
 
   drawBackground(dt);
-
   const t = dt / 16.667;
 
   if (gameStarted && !paused && !isGameOver && nowTs >= timeRampStartTs && !dying) activeTimeMs += dt;
@@ -748,20 +733,17 @@ function tick(ts) {
   }
   if (isGameOver) return;
 
-  // === SEQUÊNCIA DE MORTE CONGELANDO BG & CANOS ===
+  // === sequência de morte (BG+canos congelados) ===
   if (dying) {
-    // NÃO mover canos nem remover; só redesenhar estáticos
     for (let i = 0; i < pipeArray.length; i++) {
       const p = pipeArray[i];
       tryDrawImage(p.img, p.x, p.y, p.width, p.height);
     }
 
-    // pássaro congelado, depois queda
     if (nowTs < death.freezeUntil) {
       bird.y = death.holdY;
       birdTiltDeg = death.holdTilt;
     } else {
-      // queda (somente o pássaro se move)
       const g = (cfg.physics.gravity || 0.4) * (cfg.death?.fallGravityScale ?? 1);
       velocityY += g * t;
       if (velocityY > cfg.bird.maxFallSpeed) velocityY = cfg.bird.maxFallSpeed;
@@ -772,7 +754,6 @@ function tick(ts) {
     drawBirdWithTilt();
     drawDeathFlash(nowTs);
 
-    // finaliza quando sair da tela
     if (bird.y > canvas.height + Math.max(16, bird.height)) {
       gameOver();
       return;
@@ -789,23 +770,28 @@ function tick(ts) {
   updateBirdTilt(t);
   drawBirdWithTilt();
 
-  // chão -> inicia morte
+  // chão -> morte
   if (!dying && bird.y > canvas.height) { startDeathSequence(); }
 
+  // canos
   const scroll = currentScrollSpeed();
   for (let i = 0; i < pipeArray.length; i++) {
     const p = pipeArray[i];
     p.x += scroll * t;
     tryDrawImage(p.img, p.x, p.y, p.width, p.height);
 
-    if (!dying && !p.passed && bird.x > p.x + p.width) { score += cfg.scoring.pointsPerPipe; p.passed = true; try { SFX.score?.play(); } catch { } }
+    if (!dying && !p.passed && bird.x > p.x + p.width) {
+      score += cfg.scoring.pointsPerPipe;
+      p.passed = true;
+      try { SFX.score?.play(); } catch { }
+    }
 
     if (!dying && collidesPipePixelPerfect(bird, p)) { startDeathSequence(); }
   }
   while (pipeArray.length > 0 && pipeArray[0].x < -cfg.pipes.width) pipeArray.shift();
 }
 
-// ================== BACKGROUND SCROLL ==================
+/* ============================= BACKGROUND SCROLL ==================================== */
 function startBgLoop() {
   if (bgLooping) return;
   bgLooping = true;
@@ -828,7 +814,6 @@ function bgTick(ts) {
 
   drawBackground(dt);
 }
-
 function drawBackground(dtMs) {
   if (!okImg(bgImg)) {
     ctx.fillStyle = cfg.board.background || '#000';
@@ -841,8 +826,6 @@ function drawBackground(dtMs) {
   const factor = Number(cfg.bg?.parallaxFactor ?? 0.5);
   const bgPxPerSec = fixed > 0 ? fixed : (pxPerSecPipes * factor);
 
-
-  // NOVO: congelar o deslocamento do BG durante a morte
   if (!bgFrozen) {
     const delta = Math.max(0, dtMs) / 1000;
     bgScrollX = (bgScrollX + bgPxPerSec * delta) || 0;
@@ -858,19 +841,18 @@ function drawBackground(dtMs) {
   ctx.drawImage(bgImg, 0, 0, imgW, imgH, x + drawW, 0, drawW, drawH);
 }
 
-// ================== SPAWNER ==================
+/* ============================= SPAWNER DE CANOS ===================================== */
 function startSpawning() { stopSpawning(); scheduleNextSpawn(true); }
+
 function currentScrollSpeedAbsPerSec() {
   let base = Math.abs(cfg.pipes.scrollSpeed);
 
-  // extra por steps configuráveis
-  base += extraSpeedStepPxPerFrame();
+  base += extraSpeedStepPxPerFrame(); // degraus por tempo
 
-  // (opcional) rampa por score, se habilitada
-  const scoreExtra = cfg.difficulty?.rampEnabled ? (cfg.difficulty.speedPerScore || 0) * score : 0;
-  base += scoreExtra;
-
-  // (opcional) rampa contínua antiga por tempo, se habilitada
+  if (cfg.difficulty?.rampEnabled) {
+    const scoreExtra = (cfg.difficulty.speedPerScore || 0) * score;
+    base += scoreExtra;
+  }
   if (cfg.difficulty?.timeRampEnabled) {
     const sec = activeTimeMs / 1000;
     const timeExtra = Math.min(
@@ -879,46 +861,34 @@ function currentScrollSpeedAbsPerSec() {
     );
     base += timeExtra;
   }
-
   return base * 60; // px/seg
 }
-
 function currentScrollSpeed() {
   let base = Math.abs(cfg.pipes.scrollSpeed);
   base += extraSpeedStepPxPerFrame();
 
-  const scoreExtra = cfg.difficulty?.rampEnabled ? (cfg.difficulty.speedPerScore || 0) * score : 0;
-  base += scoreExtra;
-
+  if (cfg.difficulty?.rampEnabled) base += (cfg.difficulty.speedPerScore || 0) * score;
   if (cfg.difficulty?.timeRampEnabled) {
     const sec = activeTimeMs / 1000;
-    const timeExtra = Math.min(
-      cfg.difficulty.timeMaxExtraSpeed ?? Infinity,
-      (cfg.difficulty.timeSpeedPerSec || 0) * sec
-    );
+    const timeExtra = Math.min(cfg.difficulty.timeMaxExtraSpeed ?? Infinity, (cfg.difficulty.timeSpeedPerSec || 0) * sec);
     base += timeExtra;
   }
-
-  return -base; // move canos para a esquerda
+  return -base; // move para a esquerda
 }
-
-
 function scheduleNextSpawn(spawnNow = false) {
   if (spawnNow) placePipes();
 
   const pxPerSec = Math.max(1, currentScrollSpeedAbsPerSec());
-  const desiredSpacingPx =
-    (cfg.pipes.minHorizontalSpacingPx ?? Math.max(canvas.width * 0.48, cfg.pipes.width * 2.2));
-
+  const desiredSpacingPx = (cfg.pipes.minHorizontalSpacingPx ?? Math.max(canvas.width * 0.48, cfg.pipes.width * 2.2));
   const ms = Math.max(120, Math.round((desiredSpacingPx / pxPerSec) * 1000));
+
   spawnTimerId = setTimeout(() => {
     if (!running || isGameOver) return;
     scheduleNextSpawn(true);
   }, ms);
 }
 
-// ================== HUD / TILT ==================
-
+/* ============================= HUD / PÁSSARO / TILT ================================= */
 function updateBirdTilt(tFactor) {
   const tcfg = cfg.bird.tilt;
   if (!tcfg?.enabled) { birdTiltDeg = 0; return; }
@@ -950,61 +920,32 @@ function drawBirdWithTilt() {
   if (img) ctx.drawImage(img, -bird.width / 2, -bird.height / 2, bird.width, bird.height);
   else { ctx.fillStyle = '#fbbf24'; ctx.fillRect(-bird.width / 2, -bird.height / 2, bird.width, bird.height); }
   ctx.restore();
-
 }
-
-let hudWrap = null, hudScoreEl = null;
-let lastScoreRendered = -1;
-function showHud() { hudWrap?.classList.add('show'); }
-function hideHud() { hudWrap?.classList.remove('show'); }
-
-function ensureHudStyles() {
-  if (document.getElementById('hudStyles')) return;
-  const st = document.createElement('style');
-  st.id = 'hudStyles';
-  st.textContent = `
-#hudWrap{ position:fixed; z-index:50; pointer-events:none; display:none; }
-  #hudWrap.show{ display:block; }
-  #hudWrap .score{
-    position:absolute;
-    top: var(--hud-score-top, 24px);
-    left: var(--hud-score-left, 24px);
-    font: var(--hud-score-font, 72px Pixellari, 'Press Start 2P', system-ui, sans-serif);
-    color: var(--hud-score-color, #fff);
-    letter-spacing: var(--hud-score-letter-spacing, 1px);
-    text-shadow: var(--hud-score-shadow,
-      -3px -3px 0 #000, 3px -3px 0 #000,
-      -3px  3px 0 #000, 3px  3px 0 #000,
-      0 3px 0 #000);
-    white-space: nowrap;
-    user-select: none;
-    transform: translateZ(0);
-  }
-  `;
-  document.head.appendChild(st);
-}
-
-
 function drawHUD() {
-  if (!hudScoreEl) return;
-  const s = Math.floor(score);
-  if (s !== lastScoreRendered) {
-    lastScoreRendered = s;
-    hudScoreEl.textContent = String(s);
+  ensureScoreHud();
+
+  if (!scoreHudVisible) showScoreHud(true);
+
+  const txt = String(score);
+  if (txt !== lastScoreText) {
+    scoreHudEl.textContent = txt;
+    lastScoreText = txt;
   }
 }
 
-// ================== PIPES / COLISÃO ==================
+
+/* ============================= CANOS / COLISÃO ====================================== */
 function placePipes() {
   if (!running || isGameOver || paused || !gameStarted) return;
 
   const baseGap = cfg.pipes.gapPercent;
-  const scoreStep = cfg.difficulty?.gapStepPerScore ?? 0;
   const minGap = cfg.difficulty?.minGapPercent ?? baseGap;
+  const stepPerScore = cfg.difficulty?.gapStepPerScore ?? 0;
 
-  let gapPercent = cfg.difficulty?.rampEnabled ? (baseGap - score * scoreStep) : baseGap;
+  let gapPercent = cfg.difficulty?.rampEnabled ? (baseGap - score * stepPerScore) : baseGap;
   if (cfg.difficulty?.timeRampEnabled) gapPercent -= (cfg.difficulty.timeGapStepPerSec || 0) * (activeTimeMs / 1000);
   gapPercent = Math.max(minGap, gapPercent);
+
   const gap = (canvas.height * gapPercent) / 100;
 
   const w0 = cfg.pipes.width;
@@ -1033,7 +974,7 @@ function placePipes() {
   );
 }
 
-// AABB rápido (retângulo) – com padding do pássaro
+// caixas com padding reduzido do pássaro
 function birdRectPadded(a) {
   const pad = Math.max(0, cfg.bird.hitboxPadding || 0);
   return { x: a.x + pad, y: a.y + pad, width: a.width - pad * 2, height: a.height - pad * 2 };
@@ -1042,7 +983,6 @@ function collidesAABB(a, b) {
   const r = birdRectPadded(a);
   return r.x < b.x + b.width && r.x + r.width > b.x && r.y < b.y + b.height && r.y + r.height > b.y;
 }
-// AABB com inset no cano (fallback sem CORS/máscara)
 function collidesInsetAABB(a, b, insetPx = 0) {
   const i = Math.max(0, insetPx | 0);
   const r = birdRectPadded(a);
@@ -1050,7 +990,6 @@ function collidesInsetAABB(a, b, insetPx = 0) {
   return r.x < bx2 && r.x + r.width > bx1 && r.y < by2 && r.y + r.height > by1;
 }
 
-// Seleciona o frame atual do pássaro
 function getCurrentBirdImage() {
   const now = performance.now();
   let frameIdx = 0;
@@ -1063,7 +1002,7 @@ function getCurrentBirdImage() {
   return img;
 }
 
-// Canvas offscreen reutilizado para colisão
+// Canvas offscreen para colisão
 function ensureCollCanvas(w, h) {
   const W = Math.max(1, w | 0), H = Math.max(1, h | 0);
   if (!collCanvas) {
@@ -1130,9 +1069,7 @@ function collideBirdRotatedWithPipeMask(birdRect, angleDeg, pipe, m) {
       const mx = ((ox1 + x) - pipe.x) * sx;
       if (mx < 0 || mx >= mw) continue;
 
-      if (MASK[mrow + (mx | 0)]) {
-        return true;
-      }
+      if (MASK[mrow + (mx | 0)]) return true;
     }
   }
   return false;
@@ -1150,9 +1087,7 @@ function collidesPipePixelPerfect(birdRect, pipe) {
   const m = (pipe.img === topPipeImg) ? pipeMaskTop
     : (pipe.img === bottomPipeImg) ? pipeMaskBottom
       : null;
-  if (!m || !m.mask) {
-    return collidesInsetAABB(birdRect, pipe, cfg.collision?.pipeFallbackInsetPx ?? 6);
-  }
+  if (!m || !m.mask) return collidesInsetAABB(birdRect, pipe, cfg.collision?.pipeFallbackInsetPx ?? 6);
 
   const r = birdRectPadded(birdRect);
   const ox1 = Math.max(r.x, pipe.x) | 0;
@@ -1177,65 +1112,7 @@ function collidesPipePixelPerfect(birdRect, pipe) {
   return false;
 }
 
-// ================== SUPABASE / RANK ==================
-async function salvarScoreNoSupabase(pontos) {
-  if (!supabase) return;
-
-  const player = getLocalPlayer();
-  const payload = {
-    run_id: String(runId),
-    player_name: player.nome || 'Anônimo',
-    score: Number(pontos),
-    played_at: new Date().toISOString(),
-    prize_group: determinePrizeGroup(Number(pontos)) || null,
-    meta: {
-      startedAt: runStartISO,
-      durationMs: Math.max(0, Math.round(performance.now() - runStartPerf)),
-      activeTimeMs: Math.max(0, Math.round(activeTimeMs)),
-      board: { w: cfg?.board?.width, h: cfg?.board?.height },
-      version: 1,
-    },
-  };
-
-  const { error } = await supabase.from(SUPABASE_SCORES_TABLE).insert([payload]);
-  if (error) throw error;
-
-  // marque score recente + invalide cache
-  top10Hot = {
-    ts: Date.now(),
-    score: Number(pontos),
-    name: player.nome || 'Anônimo',
-    played_at: payload.played_at
-  };
-  invalidateTop10Cache();
-
-}
-
-
-
-
-async function fetchRankForScore(finalScore) {
-  if (!supabase) return null;
-  const { count, error } = await supabase
-    .from(SUPABASE_SCORES_TABLE)
-    .select('*', { count: 'exact', head: true })
-    .gt('score', Number(finalScore));
-  if (error) { console.warn('[Supabase] rank erro:', error); return null; }
-  return (typeof count === 'number') ? (count + 1) : null;
-}
-
-async function fetchTop10FromSupabase() {
-  if (!supabase) return [];
-  const { data, error } = await supabase
-    .from(SUPABASE_SCORES_TABLE)
-    .select('player_name, score, played_at')
-    .order('score', { ascending: false })
-    .limit(10);
-  if (error) { console.warn('[Supabase] top10 erro:', error); return []; }
-  return data || [];
-}
-
-// ================== OVERLAY INICIAL ==================
+/* ============================= OVERLAY: START ======================================= */
 function ensureStartOverlay() {
   if (document.getElementById('startStyles')) return;
 
@@ -1272,11 +1149,23 @@ function ensureStartOverlay() {
     #startOverlay .btn:hover{transform:translateY(-2px)}
     #startOverlay .btn:active{transform:translateY(2px)}
 @keyframes hero-bob{
-  0%,100% { transform: translate(-50%,-50%); } /* começa e termina exatamente no centro */
-  25%     { transform: translate(-50%,-52%); } /* sobe um pouco */
-  75%     { transform: translate(-50%,-48%); } /* desce um pouco */
+  0%,100% { transform: translate(-50%,-50%); }
+  25%     { transform: translate(-50%,-52%); }
+  75%     { transform: translate(-50%,-48%); }
 }
     @keyframes hand-tap{0%,100%{transform:translate(0,0) scale(1)}40%{transform:translate(12px,12px) scale(.92)}60%{transform:translate(0,0) scale(1)}}
+
+
+#startOverlay .secret-corner{
+    position:absolute;
+    left:0; top:0;
+    width:min(12vw, 80px);
+    height:min(12vw, 80px);
+    pointer-events:auto;      /* precisa, pq #startOverlay tem pointer-events:none */
+    background:transparent;   /* deixe transparente; troque por rgba(255,0,0,.15) p/ debugar */
+    touch-action:none;        /* evita gestos padrão em mobile */
+  }
+
   `;
   document.head.appendChild(st);
 
@@ -1293,73 +1182,75 @@ function ensureStartOverlay() {
       </div>
     </div>
   `;
+  // Hotspot secreto para segurar 10s e abrir /config.html
+  const secret = document.createElement('div');
+  secret.className = 'secret-corner';
+  secret.setAttribute('aria-hidden', 'true');
+  startOverlay.appendChild(secret);
+
+  // Long-press de 10s no hotspot
+  const SECRET_HOLD_MS = 10000;     // 10 segundos
+  const MOVE_TOLERANCE_PX = 18;     // cancela se arrastar mais que isso
+  let holdTimer = null;
+  let startX = 0, startY = 0;
+
+  function cancelSecretHold() {
+    if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; }
+  }
+
+  function goToConfig() {
+    cancelSecretHold();
+    // usa joinBase para respeitar o base path (GitHub Pages)
+    location.assign(joinBase('config.html'));
+  }
+
+  secret.addEventListener('pointerdown', (e) => {
+    // só funciona quando a tela de start está visível
+    if (!startOverlay.classList.contains('show')) return;
+
+    e.preventDefault();
+    startX = e.clientX;
+    startY = e.clientY;
+    try { secret.setPointerCapture(e.pointerId); } catch { }
+
+    cancelSecretHold();
+    holdTimer = setTimeout(goToConfig, SECRET_HOLD_MS);
+  }, { passive: false });
+
+  secret.addEventListener('pointermove', (e) => {
+    if (!holdTimer) return;
+    const dx = e.clientX - startX;
+    const dy = e.clientY - startY;
+    if ((dx * dx + dy * dy) > (MOVE_TOLERANCE_PX * MOVE_TOLERANCE_PX)) {
+      cancelSecretHold();
+    }
+  });
+
+  ['pointerup', 'pointercancel', 'lostpointercapture', 'mouseleave', 'mouseout', 'blur']
+    .forEach(evt => secret.addEventListener(evt, cancelSecretHold));
   document.body.appendChild(startOverlay);
 
   document.getElementById('btnStart')?.addEventListener('click', (e) => { e.preventDefault(); startGame(); });
   document.getElementById('btnScores')?.addEventListener('click', (e) => { e.preventDefault(); showScoresOverlay(); });
 }
 function showStartOverlay() {
-  hideHud();
   startOverlay?.classList.add('show');
   uiLocked = true;
   startBgLoop();
+  showScoreHud(false);
 
   const hero = startOverlay?.querySelector('.hero');
   if (hero) {
     hero.style.animation = 'none';
-
-    hero.offsetHeight;
+    hero.offsetHeight; // reflow para reiniciar animação
     hero.style.animation = '';
   }
 }
 function hideStartOverlay() { startOverlay?.classList.remove('show'); uiLocked = false; }
 
-// ---- TOP10 CACHE ----
-const TOP10_CACHE_KEY = `flappy:top10:${CONFIG_SLUG}`;
-const TOP10_TTL_MS = 2 * 60 * 1000;      // 2 min
-const TOP10_HOT_MS = 15 * 1000;          // janela "quente" após salvar
-const TOP10_RECHECK_DELAY_MS = 3000;     // 3s para revalidar
-
-let top10CacheMem = null;
-
-// guarda último score salvo (para heurística de revalidação)
-let top10Hot = { ts: 0, score: 0, name: '', played_at: '' };
-
-function top10ComputeSig(rows) {
-  return (rows || [])
-    .map(r => `${r.player_name || ''}|${r.score || 0}|${r.played_at || ''}`)
-    .join('#');
-}
-function readTop10Cache() {
-  if (top10CacheMem && (Date.now() - (top10CacheMem.ts || 0)) < TOP10_TTL_MS) return top10CacheMem;
-  try {
-    const raw = localStorage.getItem(TOP10_CACHE_KEY);
-    if (!raw) return null;
-    const obj = JSON.parse(raw);
-    if (!obj || !obj.rows) return null;
-    if ((Date.now() - (obj.ts || 0)) > TOP10_TTL_MS) return null;
-    top10CacheMem = obj;
-    return obj;
-  } catch { return null; }
-}
-function writeTop10Cache(rows) {
-  const obj = { ts: Date.now(), rows: rows || [], sig: top10ComputeSig(rows) };
-  top10CacheMem = obj;
-  try { localStorage.setItem(TOP10_CACHE_KEY, JSON.stringify(obj)); } catch { }
-  return obj;
-}
-function invalidateTop10Cache() {
-  top10CacheMem = null;
-  try { localStorage.removeItem(TOP10_CACHE_KEY); } catch { }
-}
-function top10IsHot() { return (Date.now() - (top10Hot.ts || 0)) < TOP10_HOT_MS; }
-function top10MinScore(rows) {
-  if (!rows?.length) return -Infinity;
-  return Number(rows[rows.length - 1]?.score ?? -Infinity);
-}
 
 
-// ================== OVERLAY TOP 10 ==================
+/* ============================= OVERLAY: TOP 10 ====================================== */
 function ensureScoresOverlay() {
   if (document.getElementById('scoresStyles')) return;
 
@@ -1381,20 +1272,23 @@ function ensureScoresOverlay() {
     user-select:none; -webkit-user-drag:none;
   }
   #scoresOverlay .title{
-    width:100%; max-width:min(88vw, 520px);
-    margin-top:min(3vh, 22px); margin-bottom:8px;
-    font-weight:900; color:#fff;
-    font-size:clamp(22px, 5vh, 36px);
-    text-shadow:
-      -2px -2px 0 #0a0a0a, 2px -2px 0 #0a0a0a,
-      -2px  2px 0 #0a0a0a, 2px  2px 0 #0a0a0a,
-      0 2px 0 #0a0a0a;
-    user-select:none;
-    padding-left:calc((100% - min(30vw,520px))/2);
+    width: 100%;
+    max-width: min(88vw, 520px);
+    margin-top: min(10vh, 300px);
+    margin-bottom: 8px;
+    font-weight: 900;
+    color: #fff;
+    font-size: clamp(22px, 5vh, 64px);
+    text-shadow: -2px -2px 0 #0a0a0a, 2px -2px 0 #0a0a0a, -2px 2px 0 #0a0a0a, 2px 2px 0 #0a0a0a, 0 2px 0 #0a0a0a;
+    user-select: none;
+    padding-left: calc((100% - min(85vw, 964px)) / 2);
   }
   #scoresOverlay .list{
-    width:100%; max-width:min(88vw, 520px);
-    height:100%; overflow:auto; padding:4px 8px 24px 8px;
+ width: 100%;
+    max-width: min(91vw, 563px);
+    height: 100%;
+    overflow: auto;
+    padding: 4px 8px 24px 8px;
   }
   #scoresOverlay .item{
     display:grid; grid-template-columns: 48px 1fr auto; align-items:center;
@@ -1425,9 +1319,7 @@ function ensureScoresOverlay() {
     position:absolute; left:0; right:0; bottom:2vh; text-align:center;
     color:#ffffffcc; font-size:clamp(12px, 2vh, 14px);
     text-shadow:-1px -1px 0 #0a0a0a,1px -1px 0 #0a0a0a,-1px 1px 0 #0a0a0a,1px 1px 0 #0a0a0a;
-    user-select:none;
-    cursor:pointer;
-    padding:10px 0;
+    user-select:none; cursor:pointer; padding:10px 0;
   }
   #scoresOverlay .hint:active{ transform:translateY(1px) }
 `;
@@ -1445,95 +1337,38 @@ function ensureScoresOverlay() {
   `;
   document.body.appendChild(scoresOverlay);
 
-  // clicar fora do card fecha
-  scoresOverlay.addEventListener('click', () => {
-    hideScoresOverlay();
-    showStartOverlay();
-  });
-
-  // impedir que cliques dentro do card fechem o overlay
+  scoresOverlay.addEventListener('click', () => { hideScoresOverlay(); showStartOverlay(); });
   const wrap = scoresOverlay.querySelector('#scoresWrap');
   wrap.addEventListener('click', (e) => e.stopPropagation());
 
-  // <<< NOVO: clique no texto "Toque para voltar" fecha e volta à start screen >>>
   const hint = scoresOverlay.querySelector('.hint');
   hint?.addEventListener('click', (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    hideScoresOverlay();
-    showStartOverlay();
+    e.preventDefault(); e.stopPropagation();
+    hideScoresOverlay(); showStartOverlay();
   });
 }
 
 async function showScoresOverlay() {
-  hideHud();
   hideStartOverlay();
-
   ensureScoresOverlay();
   scoresOverlay?.classList.add('show');
   uiLocked = true;
-
   startBgLoop();
+  showScoreHud(false);
 
   const list = document.getElementById('scoresList');
   if (!list) return;
-
-  // 1) Renderiza cache (se houver) para mostrar algo imediato
-  const cache = readTop10Cache();
-  if (cache?.rows?.length) {
-    renderTop10ListTo(list, cache.rows);
-  } else {
-    list.innerHTML = `<div class="name" style="opacity:.8;padding:10px 0">Carregando…</div>`;
-  }
-
-  // 2) Decide se precisamos ignorar TTL (acabou de salvar um score?)
-  const forceNetwork = top10IsHot();
-
-  // 3) Busca do servidor (sempre quando estiver "quente"; caso contrário, só se não houver cache ou cache expirou)
-  const shouldFetch =
-    forceNetwork ||
-    !cache ||
-    (Date.now() - (cache.ts || 0)) > TOP10_TTL_MS;
-
-  if (!shouldFetch && cache?.rows?.length) return; // cache fresco e não "quente"
+  list.innerHTML = `<div class="name" style="opacity:.8;padding:10px 0">Carregando…</div>`;
 
   try {
-    const rows1 = await fetchTop10FromSupabase();
-    const sig1 = top10ComputeSig(rows1);
-    const prevSig = cache?.sig;
-
-    writeTop10Cache(rows1);
-    if (!prevSig || prevSig !== sig1) {
-      renderTop10ListTo(list, rows1);
-    }
-
-    // 4) Janela quente: se meu score deveria entrar no top10 mas ainda não apareceu, revalida 1x após 3s
-    if (forceNetwork && (rows1.length < 10 || top10Hot.score > top10MinScore(rows1))) {
-      setTimeout(async () => {
-        try {
-          const rows2 = await fetchTop10FromSupabase();
-          const sig2 = top10ComputeSig(rows2);
-          if (sig2 !== sig1) {
-            writeTop10Cache(rows2);
-            renderTop10ListTo(list, rows2);
-          }
-        } catch { }
-      }, TOP10_RECHECK_DELAY_MS);
-    }
+    const rows = await fetchTop10FromSupabase();
+    renderTop10ListTo(list, rows);
   } catch (e) {
-    console.warn('[Top10] erro ao buscar, mantendo cache se houver:', e);
-    if (!cache?.rows?.length) {
-      list.innerHTML = `<div class="name" style="opacity:.85;padding:12px 2px">Sem scores no servidor ainda.</div>`;
-    }
+    console.warn('[Top10] erro ao buscar:', e);
+    list.innerHTML = `<div class="name" style="opacity:.85;padding:12px 2px">Sem scores no servidor ainda.</div>`;
   }
 }
-
-
-
-function hideScoresOverlay() {
-  scoresOverlay?.classList.remove('show');
-  uiLocked = false;
-}
+function hideScoresOverlay() { scoresOverlay?.classList.remove('show'); uiLocked = false; }
 
 function renderTop10ListTo(listEl, rows) {
   if (!listEl) return;
@@ -1551,12 +1386,10 @@ function renderTop10ListTo(listEl, rows) {
   `).join('');
 }
 
-
-// ================== OVERLAY RANK (GAME OVER) ==================
+/* ============================= OVERLAY: RANK (GAME OVER) ============================ */
 function ensureRankOverlay() {
   if (document.getElementById('rankStyles')) return;
 
-  // caminho do balão
   const panelBgUrl = joinBase('assets/img/modalBG.png');
 
   const st = document.createElement('style');
@@ -1565,72 +1398,41 @@ function ensureRankOverlay() {
     #rankOverlay{position:fixed;inset:0;display:none;z-index:1100;cursor:pointer}
     #rankOverlay.show{display:block}
     #rankOverlay .wrap{position:absolute;inset:0;display:grid;place-items:start center;pointer-events:auto}
-
-#rankOverlay .prize{
-  margin-top:2px;
-  font-size:clamp(16px,3.2vh,24px);
-  color:#222;
-  text-shadow:-2px -2px 0 #fff, 2px -2px 0 #fff, -2px 2px 0 #fff, 2px 2px 0 #fff;
-  font-weight:800; letter-spacing:1px;
-}
-
-
+    #rankOverlay .prize{
+      margin-top:2px; font-size:clamp(16px,3.2vh,24px); color:#222;
+      text-shadow:-2px -2px 0 #fff, 2px -2px 0 #fff, -2px 2px 0 #fff, 2px 2px 0 #fff;
+      font-weight:800; letter-spacing:1px;
+    }
     #rankOverlay .title{
       margin-top:4vh;color:#ffffff; font-weight:900; letter-spacing:1px;
       font-size:clamp(26px,5.5vh,44px);
-      text-shadow:
-        -2px -2px 0 #0b0b0b, 2px -2px 0 #0b0b0b,
-        -2px  2px 0 #0b0b0b, 2px  2px 0 #0b0b0b,
-        0 2px 0 #0b0b0b;
+      text-shadow:-2px -2px 0 #0b0b0b, 2px -2px 0 #0b0b0b, -2px 2px 0 #0b0b0b, 2px 2px 0 #0b0b0b, 0 2px 0 #0b0b0b;
       user-select:none;
     }
-
-    /* Painel com BG de imagem (balão) */
     #rankOverlay .panel{
-      position:relative;
-      margin-top:3vh;
-      width:min(88vw, 620px);
-      aspect-ratio: 5 / 3;                 /* ajuste fino do formato do balão */
-      background-image: url('${panelBgUrl}');
-      background-repeat: no-repeat;
-      background-position: center;
-      background-size: contain;
-      image-rendering: pixelated;          /* deixar o sprite nítido */
-      display:flex; align-items:center; justify-content:center;
+      position:relative; margin-top:3vh; width:min(88vw, 620px);
+      aspect-ratio: 5 / 3; background-image:url('${panelBgUrl}');
+      background-repeat:no-repeat; background-position:center; background-size:contain;
+      image-rendering:pixelated; display:flex; align-items:center; justify-content:center;
       padding: clamp(18px, 3vh, 28px) clamp(22px, 4vh, 40px);
     }
-
-    /* conteúdo por cima do balão */
-    #rankOverlay .panel-inner{
-      display:flex; align-items:center; gap:min(4vw,24px);
-    }
-
+    #rankOverlay .panel-inner{ display:flex; align-items:center; gap:min(4vw,24px); }
     #rankOverlay .panel .bird{ width:min(18vw,120px); image-rendering:pixelated; filter:drop-shadow(0 2px 0 #0003) }
-
     #rankOverlay .score{
-      font-weight:900; color:#ffffff; background:#111;
-      padding:2px 12px; border-radius:10px; display:inline-block;
+      font-weight:900; color:#ffffff; background:#111; padding:2px 12px; border-radius:10px; display:inline-block;
       font-size:clamp(64px,10vh,120px); line-height:1;
-      text-shadow:
-        -6px -6px 0 #000, 6px -6px 0 #000,
-        -6px  6px 0 #000, 6px  6px 0 #000,
-        0 4px 0 #000;
+      text-shadow:-6px -6px 0 #000, 6px -6px 0 #000, -6px  6px 0 #000, 6px  6px 0 #000, 0 4px 0 #000;
     }
-
     #rankOverlay .ranking{
       margin-top:8px; font-size:clamp(18px,3.5vh,26px); color:#222;
-      text-shadow:
-        -2px -2px 0 #fff, 2px -2px 0 #fff,
-        -2px  2px 0 #fff, 2px  2px 0 #fff;
+      text-shadow:-2px -2px 0 #fff, 2px -2px 0 #fff, -2px  2px 0 #fff, 2px  2px 0 #fff;
       font-weight:800; letter-spacing:1px;
     }
-
     #rankOverlay .finalizar{
       margin-top:5vh; color:#ffffff; font-size:clamp(18px,3.5vh,28px); font-weight:700;
       text-shadow:-2px -2px 0 #000,2px -2px 0 #000,-2px 2px 0 #000,2px 2px 0 #000;
       user-select:none;
     }
-
     #rankOverlay .hand{
       position:absolute; bottom:6vh; width:min(20vw,120px); image-rendering:pixelated;
       animation:hand-tap 1.15s ease-in-out infinite; transform-origin:10% 10%;
@@ -1645,33 +1447,27 @@ function ensureRankOverlay() {
   rankOverlay.innerHTML = `
     <div class="wrap" id="rankWrap">
       <div class="title">Game Over</div>
-
       <div class="panel">
-  <div class="panel-inner">
-    ${UI_ASSETS.heroBird ? `<img class="bird" src="${UI_ASSETS.heroBird}" alt="bird">` : ''}
-    <div>
-      <div id="rankScore" class="score">0</div>
-      <div id="rankPos" class="ranking">Ranking --</div>
-      <div id="rankPrize" class="prize"></div> <!-- NOVO -->
-    </div>
-  </div>
-</div>
-
+        <div class="panel-inner">
+          ${UI_ASSETS.heroBird ? `<img class="bird" src="${UI_ASSETS.heroBird}" alt="bird">` : ''}
+          <div>
+            <div id="rankScore" class="score">0</div>
+            <div id="rankPos" class="ranking">Ranking --</div>
+            <div id="rankPrize" class="prize"></div>
+          </div>
+        </div>
+      </div>
       <div class="finalizar">Finalizar</div>
       ${UI_ASSETS.hand ? `<img class="hand" src="${UI_ASSETS.hand}" alt="tap">` : ''}
     </div>
   `;
   document.body.appendChild(rankOverlay);
 
-  // clicar em qualquer lugar fecha e volta
   rankOverlay.addEventListener('click', finalizeAndReset);
-
-  // impedir que clique dentro do painel feche acidentalmente (se quiser manter o comportamento atual, remova este trecho)
   const panel = rankOverlay.querySelector('.panel');
   panel?.addEventListener('click', (e) => e.stopPropagation());
 }
 function showRankOverlay(finalScore, rankPos) {
-  hideHud();
   const sc = document.getElementById('rankScore');
   const rp = document.getElementById('rankPos');
   const pr = document.getElementById('rankPrize');
@@ -1683,38 +1479,85 @@ function showRankOverlay(finalScore, rankPos) {
 
   rankOverlay?.classList.add('show');
   uiLocked = true;
+  showScoreHud(false);
 }
-
 function hideRankOverlay() { rankOverlay?.classList.remove('show'); uiLocked = false; }
 
-// ================== GAME OVER FLOW ==================
+/* ============================= SUPABASE / RANK ====================================== */
+async function salvarScoreNoSupabase(pontos) {
+  if (!supabase) return;
+
+  const player = getLocalPlayer();
+  const payload = {
+    run_id: String(runId),
+    player_name: player.nome || 'Anônimo',
+    score: Number(pontos),
+    played_at: new Date().toISOString(),
+    prize_group: determinePrizeGroup(Number(pontos)) || null,
+    meta: {
+      startedAt: runStartISO,
+      durationMs: Math.max(0, Math.round(performance.now() - runStartPerf)),
+      activeTimeMs: Math.max(0, Math.round(activeTimeMs)),
+      board: { w: cfg?.board?.width, h: cfg?.board?.height },
+      version: 1,
+    },
+  };
+
+  const { error } = await supabase.from(SUPABASE_SCORES_TABLE).insert([payload]);
+  if (error) throw error;
+}
+
+async function fetchRankForScore(finalScore) {
+  if (!supabase) return null;
+  const { count, error } = await supabase
+    .from(SUPABASE_SCORES_TABLE)
+    .select('*', { count: 'exact', head: true })
+    .gt('score', Number(finalScore));
+  if (error) { console.warn('[Supabase] rank erro:', error); return null; }
+  return (typeof count === 'number') ? (count + 1) : null;
+}
+
+async function fetchTop10FromSupabase() {
+  if (!supabase) return [];
+  const { data, error } = await supabase
+    .from(SUPABASE_SCORES_TABLE)
+    .select('player_name, score, played_at')
+    .order('score', { ascending: false })
+    .limit(10);
+  if (error) { console.warn('[Supabase] top10 erro:', error); return []; }
+  return data || [];
+}
+
+/* ============================= GAME OVER FLOW ======================================= */
 async function handleGameOverSave() {
-  // garante que só roda uma vez por run
   if (saveOnce) return savePromise;
   saveOnce = true;
 
+  // Abre o modal imediatamente (sem aguardar rede)
+  showRankOverlay(score, null); // mostra "Ranking --" até chegar a posição
+
+  // Dispara save + rank em paralelo
   savePromise = (async () => {
-    let savedOk = false;
+    const saveP = salvarScoreNoSupabase(score)
+      .catch(e => console.warn('[Supabase] falha ao salvar:', e));
 
-    try {
-      await salvarScoreNoSupabase(score);
-      savedOk = true;
-      try { sessionStorage.clear(); } catch { }
-    } catch (e) {
-      console.warn('[Supabase] falha ao salvar:', e);
-    }
+    const rankP = fetchRankForScore(score)
+      .catch(e => { console.warn('[Supabase] rank erro:', e); return null; });
 
-    let pos = null;
-    try { pos = await fetchRankForScore(score); } catch { }
+    const [, rankRes] = await Promise.allSettled([saveP, rankP]);
+    const pos = (rankRes.status === 'fulfilled') ? rankRes.value : null;
 
-    showRankOverlay(score, pos);
+    // Atualiza a posição no painel (se ainda estiver aberto)
+    const rp = document.getElementById('rankPos');
+    if (rp) rp.textContent = `Ranking ${pos != null ? String(pos).padStart(2, '0') : '--'}`;
+
+    try { sessionStorage.clear(); } catch { }
   })();
 
   return savePromise;
 }
 
-
-// ================== RESET/FINALIZAR ==================
+/* ============================= RESET / FINALIZAR ==================================== */
 function finalizeAndReset() {
   try { localStorage.clear(); } catch { }
   try { sessionStorage.clear(); } catch { }
@@ -1730,19 +1573,18 @@ function finalizeAndReset() {
   pipeArray = [];
   isGameOver = false;
   gameStarted = false;
-
-  hideHud();
+  showScoreHud(false);
   hideRankOverlay();
   showStartOverlay();
   startBgLoop();
 }
 
+/* ============================= PRÊMIOS / GRUPOS ===================================== */
 function getPrizeForScore(score) {
   const arr = Array.isArray(cfg.prizes) ? cfg.prizes : [];
   const s = Number(score) || 0;
 
   let found = arr.find(g => s >= Number(g.min ?? -Infinity) && s < Number(g.max ?? Infinity));
-
   if (!found && arr.length) {
     const last = arr[arr.length - 1];
     if (s >= Number(last.min ?? -Infinity) && s <= Number(last.max ?? Infinity)) {
@@ -1751,8 +1593,6 @@ function getPrizeForScore(score) {
   }
   return found || null;
 }
-
-
 function extraSpeedStepPxPerFrame() {
   const stepMs = Math.max(1, cfg.difficulty?.stepEveryMs ?? 2000);
   const addStep = Number(cfg.difficulty?.stepAddPxPerFrame ?? 0.30);
@@ -1761,14 +1601,114 @@ function extraSpeedStepPxPerFrame() {
   const steps = Math.floor(activeTimeMs / stepMs);
   return Math.min(maxExtra, steps * addStep);
 }
-
-
 function determinePrizeGroup(points) {
   return groupNameForScore(Number(points) || 0, cfg.prizes);
 }
+function normalizePrizes(prizes) {
+  if (!Array.isArray(prizes)) return [];
+  const clean = prizes
+    .map(g => ({
+      min: Number(g?.min ?? 0),
+      max: Number(g?.max ?? 0),
+      name: String(g?.name ?? '').trim() || 'Grupo',
+    }))
+    .filter(g => Number.isFinite(g.min) && Number.isFinite(g.max) && g.max >= g.min);
+  clean.sort((a, b) => (a.min - b.min) || (a.max - b.max));
+  return clean;
+}
+function _inRange(score, g, isLast) {
+  return isLast ? (score >= g.min && score <= g.max) : (score >= g.min && score < g.max);
+}
+function groupNameForScore(score, prizes) {
+  const arr = normalizePrizes(prizes);
+  for (let i = 0; i < arr.length; i++) {
+    if (_inRange(score, arr[i], i === arr.length - 1)) return arr[i].name;
+  }
+  return null;
+}
+
+// === SCORE HUD (DOM) ===
+let scoreHudEl = null;
+let scoreHudVisible = false;
+let lastScoreText = '';
+
+function ensureScoreHud() {
+  if (!document.getElementById('scoreHudStyles')) {
+    const st = document.createElement('style');
+    st.id = 'scoreHudStyles';
+    st.textContent = `
+      #scoreHud{
+        position: fixed;
+        top: 12px;           /* reposicione à vontade no seu CSS */
+        left: 12px;          /* ex.: top:auto; bottom:24px; right:24px; */
+        z-index: 200;        /* abaixo dos overlays (999/1000/1100) */
+        pointer-events: none;
+        user-select: none;
+        font: var(--score-font, 45px sans-serif);
+        color: var(--score-color, #ffffff);
+        text-shadow:
+          -1px -1px 0 #0a0a0a, 1px -1px 0 #0a0a0a,
+          -1px  1px 0 #0a0a0a, 1px  1px 0 #0a0a0a;
+        display: none;
+      }
+    `;
+    document.head.appendChild(st);
+  }
+  if (!scoreHudEl) {
+    scoreHudEl = document.createElement('div');
+    scoreHudEl.id = 'scoreHud';
+    scoreHudEl.setAttribute('aria-live', 'off');
+    scoreHudEl.setAttribute('aria-atomic', 'true');
+    document.body.appendChild(scoreHudEl);
+  }
+  // aplica cores e fonte vindas da cfg (você pode sobrescrever no CSS também)
+  scoreHudEl.style.setProperty('--score-font', cfg?.ui?.font || '45px sans-serif');
+  scoreHudEl.style.setProperty('--score-color', cfg?.ui?.scoreColor || '#ffffff');
+}
+
+function showScoreHud(show) {
+  if (!scoreHudEl) return;
+  scoreHudEl.style.display = show ? 'block' : 'none';
+  scoreHudVisible = !!show;
+}
+
+// Bloqueia RIGHT CLICK (mouse) globalmente + menu de contexto
+function disableRightClickGlobally() {
+  const opts = { capture: true };
+
+  const stop = (e) => {
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    return false;
+  };
+
+  // Bloqueia botão direito já no início do evento
+  const onPointerDown = (e) => {
+    if (e.pointerType === 'mouse' && (e.button === 2 || e.buttons === 2)) stop(e);
+  };
+
+  const onMouseDown = (e) => {
+    if (e.button === 2) stop(e);
+  };
+
+  // Alguns navegadores disparam 'auxclick' para botão do meio/direito
+  const onAuxClick = (e) => {
+    if (e.button === 2) stop(e);
+  };
+
+  // Garante que o menu de contexto não abra (inclui ctrl+click no mac)
+  const onContextMenu = (e) => stop(e);
+
+  window.addEventListener('pointerdown', onPointerDown, opts);
+  window.addEventListener('mousedown', onMouseDown, opts);
+  window.addEventListener('auxclick', onAuxClick, opts);
+  window.addEventListener('contextmenu', onContextMenu, opts);
+}
 
 
-// ================== HELPERS ==================
+
+
+/* ============================= HELPERS GERAIS ======================================= */
 async function withUiLock(promiseLike) { uiLocked = true; try { await promiseLike; } finally { uiLocked = false; } }
 function clamp(n, min, max) { return Math.max(min, Math.min(max, n)); }
 function lerp(a, b, t) { return a + (b - a) * t; }
@@ -1782,31 +1722,4 @@ function okImg(im) { return !!(im && im.complete && im.naturalWidth > 0); }
 function tryDrawImage(im, x, y, w, h) {
   if (okImg(im)) ctx.drawImage(im, x, y, w, h);
   else { ctx.save(); ctx.fillStyle = '#2dd4bf33'; ctx.fillRect(x, y, w, h); ctx.strokeStyle = '#ef4444'; ctx.strokeRect(x, y, w, h); ctx.restore(); }
-}
-
-// ------------ PRIZES (grupos por faixa de pontuação) ------------
-function normalizePrizes(prizes) {
-  if (!Array.isArray(prizes)) return [];
-  const clean = prizes
-    .map(g => ({
-      min: Number(g?.min ?? 0),
-      max: Number(g?.max ?? 0),
-      name: String(g?.name ?? '').trim() || 'Grupo',
-    }))
-    .filter(g => Number.isFinite(g.min) && Number.isFinite(g.max) && g.max >= g.min);
-  clean.sort((a, b) => (a.min - b.min) || (a.max - b.max));
-  return clean;
-}
-
-// [min, max) e o último grupo é [min, max] (inclusivo no max)
-function _inRange(score, g, isLast) {
-  return isLast ? (score >= g.min && score <= g.max) : (score >= g.min && score < g.max);
-}
-
-function groupNameForScore(score, prizes) {
-  const arr = normalizePrizes(prizes);
-  for (let i = 0; i < arr.length; i++) {
-    if (_inRange(score, arr[i], i === arr.length - 1)) return arr[i].name;
-  }
-  return null;
 }
