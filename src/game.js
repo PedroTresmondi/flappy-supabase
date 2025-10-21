@@ -171,21 +171,47 @@ let death = {
   holdTilt: 0
 };
 
+function ensureHudDom() {
+  ensureHudStyles();
+  if (hudWrap) return;
+  hudWrap = document.createElement('div');
+  hudWrap.id = 'hudWrap';
+  hudWrap.innerHTML = `<div id="hudScore" class="score">0</div>`;
+  document.body.appendChild(hudWrap);
+  hudScoreEl = hudWrap.querySelector('#hudScore');
+  updateHudOverlayRect(); // posiciona sobre o canvas
+}
+
+function applyHudCssFromConfig() {
+  // opcional: ler do cfg.ui.scoreCss (se quiser controlar via config)
+  const s = cfg?.ui?.scoreCss || {};
+  if (!hudWrap) return;
+  const el = hudWrap; // usamos CSS vars no próprio wrap
+
+  if (s.topPx != null) el.style.setProperty('--hud-score-top', `${s.topPx}px`);
+  if (s.leftPx != null) el.style.setProperty('--hud-score-left', `${s.leftPx}px`);
+  if (s.font) el.style.setProperty('--hud-score-font', s.font);
+  if (s.color) el.style.setProperty('--hud-score-color', s.color);
+  if (s.letterSpacing) el.style.setProperty('--hud-score-letter-spacing', s.letterSpacing);
+  if (s.shadow) el.style.setProperty('--hud-score-shadow', s.shadow);
+}
+
+
 // ================== BOOT ==================
 export async function boot() {
-  // 1) fonte para DOM + canvas
   installPixellari();
   await waitPixellari();
 
-  // 2) config normal
   cfg = await loadConfigSanitized();
   cfg = forceBoardToTarget(cfg, TARGET_W, TARGET_H);
   cfg = applyUniformScale(cfg, BASE_W, BASE_H);
-
-  // 3) aplicar fonte na UI do HUD
   cfg = applyPixellariToCfg(cfg);
 
   setupCanvas();
+  hideHud();
+  ensureHudDom();
+
+  applyHudCssFromConfig();
   await loadAssets();
   setupControls();
 
@@ -198,11 +224,14 @@ export async function boot() {
 }
 
 
+
 // ================== CICLO DE VIDA ==================
 function resetRunState() {
   pipeArray = [];
   isGameOver = false;
   score = 0;
+  lastScoreRendered = -1;
+  if (hudScoreEl) hudScoreEl.textContent = '0';
 
   runId = (crypto?.randomUUID?.() || ('run-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8)));
   runStartISO = new Date().toISOString();
@@ -225,6 +254,7 @@ function resetRunState() {
 }
 
 export async function startGame() {
+  showHud();
   hideStartOverlay();
   hideScoresOverlay();
   hideRankOverlay();
@@ -409,6 +439,18 @@ function layoutCanvasCover() {
   canvas.style.height = cssH + 'px';
   canvas.style.left = Math.round((vw - cssW) / 2) + 'px';
   canvas.style.top = Math.round((vh - cssH) / 2) + 'px';
+
+  updateHudOverlayRect()
+}
+function updateHudOverlayRect() {
+  if (!canvas || !hudWrap) return;
+  const r = canvas.getBoundingClientRect();
+  Object.assign(hudWrap.style, {
+    left: r.left + 'px',
+    top: r.top + 'px',
+    width: r.width + 'px',
+    height: r.height + 'px',
+  });
 }
 
 // ================== ASSETS / MÁSCARAS DE CANO ==================
@@ -749,6 +791,7 @@ function drawBackground(dtMs) {
   const factor = Number(cfg.bg?.parallaxFactor ?? 0.5);
   const bgPxPerSec = fixed > 0 ? fixed : (pxPerSecPipes * factor);
 
+
   // NOVO: congelar o deslocamento do BG durante a morte
   if (!bgFrozen) {
     const delta = Math.max(0, dtMs) / 1000;
@@ -857,11 +900,48 @@ function drawBirdWithTilt() {
   if (img) ctx.drawImage(img, -bird.width / 2, -bird.height / 2, bird.width, bird.height);
   else { ctx.fillStyle = '#fbbf24'; ctx.fillRect(-bird.width / 2, -bird.height / 2, bird.width, bird.height); }
   ctx.restore();
+
 }
+
+let hudWrap = null, hudScoreEl = null;
+let lastScoreRendered = -1;
+function showHud() { hudWrap?.classList.add('show'); }
+function hideHud() { hudWrap?.classList.remove('show'); }
+
+function ensureHudStyles() {
+  if (document.getElementById('hudStyles')) return;
+  const st = document.createElement('style');
+  st.id = 'hudStyles';
+  st.textContent = `
+#hudWrap{ position:fixed; z-index:50; pointer-events:none; display:none; }
+  #hudWrap.show{ display:block; }
+  #hudWrap .score{
+    position:absolute;
+    top: var(--hud-score-top, 24px);
+    left: var(--hud-score-left, 24px);
+    font: var(--hud-score-font, 72px Pixellari, 'Press Start 2P', system-ui, sans-serif);
+    color: var(--hud-score-color, #fff);
+    letter-spacing: var(--hud-score-letter-spacing, 1px);
+    text-shadow: var(--hud-score-shadow,
+      -3px -3px 0 #000, 3px -3px 0 #000,
+      -3px  3px 0 #000, 3px  3px 0 #000,
+      0 3px 0 #000);
+    white-space: nowrap;
+    user-select: none;
+    transform: translateZ(0);
+  }
+  `;
+  document.head.appendChild(st);
+}
+
+
 function drawHUD() {
-  ctx.fillStyle = cfg.ui.scoreColor;
-  ctx.font = cfg.ui.font;
-  ctx.fillText(score, 5 | 0, 64 | 0);
+  if (!hudScoreEl) return;
+  const s = Math.floor(score);
+  if (s !== lastScoreRendered) {
+    lastScoreRendered = s;
+    hudScoreEl.textContent = String(s);
+  }
 }
 
 // ================== PIPES / COLISÃO ==================
@@ -1169,6 +1249,7 @@ function ensureStartOverlay() {
   document.getElementById('btnScores')?.addEventListener('click', (e) => { e.preventDefault(); showScoresOverlay(); });
 }
 function showStartOverlay() {
+  hideHud();
   startOverlay?.classList.add('show');
   uiLocked = true;
   startBgLoop();
@@ -1335,6 +1416,7 @@ function ensureScoresOverlay() {
 }
 
 async function showScoresOverlay() {
+  hideHud();
   hideStartOverlay();
 
   ensureScoresOverlay();
@@ -1539,6 +1621,7 @@ function ensureRankOverlay() {
   panel?.addEventListener('click', (e) => e.stopPropagation());
 }
 function showRankOverlay(finalScore, rankPos) {
+  hideHud();
   const sc = document.getElementById('rankScore');
   const rp = document.getElementById('rankPos');
   const pr = document.getElementById('rankPrize');
@@ -1598,6 +1681,7 @@ function finalizeAndReset() {
   isGameOver = false;
   gameStarted = false;
 
+  hideHud();
   hideRankOverlay();
   showStartOverlay();
   startBgLoop();
