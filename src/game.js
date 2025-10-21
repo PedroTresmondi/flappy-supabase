@@ -493,64 +493,135 @@ class SoundPool {
 }
 
 
-function loadAssets() {
-  return new Promise((resolve) => {
-    const frames = cfg.assets.birdFrames || [];
-    let toLoad = frames.length + 3; // +2 pipes +1 bg
-    const done = () => {
-      if (--toLoad === 0) {
-        birdImgs = birdImgs.filter(okImg);
-        applyDynamicBirdAutosize();
-        resolve();
-      }
-    };
-
-    // frames do pássaro
-    birdImgs = [];
-    frames.forEach(src => {
+async function loadAssets() {
+  // --- helpers locais -------------------------------------------
+  function loadImageSafe(src) {
+    return new Promise((resolve) => {
+      if (!src) return resolve(null);
       const im = new Image();
-      im.crossOrigin = "anonymous";
-      im.onload = done;
-      im.onerror = () => { console.warn('[assets] falhou frame:', src); done(); };
+      im.crossOrigin = 'anonymous';
+      im.onload = () => resolve(im);
+      im.onerror = () => {
+        console.warn('[assets] falhou img:', src);
+        resolve(null);
+      };
       im.src = src;
-      birdImgs.push(im);
     });
+  }
 
-    // canos + máscaras
-    topPipeImg = new Image();
-    topPipeImg.crossOrigin = "anonymous";
-    topPipeImg.onload = () => { try { pipeMaskTop = buildPipeMask(topPipeImg); } catch (e) { console.warn('mask top err:', e); } done(); };
-    topPipeImg.onerror = () => { console.warn('[assets] topPipe falhou:', cfg.assets.topPipe); topPipeImg = null; done(); };
-    topPipeImg.src = cfg.assets.topPipe;
-
-    bottomPipeImg = new Image();
-    bottomPipeImg.crossOrigin = "anonymous";
-    bottomPipeImg.onload = () => { try { pipeMaskBottom = buildPipeMask(bottomPipeImg); } catch (e) { console.warn('mask bottom err:', e); } done(); };
-    bottomPipeImg.onerror = () => { console.warn('[assets] bottomPipe falhou:', cfg.assets.bottomPipe); bottomPipeImg = null; done(); };
-    bottomPipeImg.src = cfg.assets.bottomPipe;
-
-    // BG
-    bgImg = null;
-    const bgUrl = cfg.assets.bg;
-    if (bgUrl) {
-      const im = new Image();
-      im.crossOrigin = "anonymous";
-      im.onload = done;
-      im.onerror = () => { console.warn('[assets] bg falhou:', bgUrl); done(); };
-      im.src = bgUrl;
-      bgImg = im;
-    } else {
-      done();
+  class WebAudioEngine {
+    constructor() {
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      this.ctx = new Ctx({ latencyHint: 'interactive' });
+      this.buffers = {};
+      this._unlock = this._unlock.bind(this);
     }
+    async load(name, url) {
+      if (!url) return;
+      try {
+        const res = await fetch(url, { cache: 'force-cache' });
+        const ab = await res.arrayBuffer();
+        this.buffers[name] = await new Promise((ok, err) =>
+          this.ctx.decodeAudioData(ab, ok, err)
+        );
+      } catch (e) {
+        console.warn('[audio] falhou ao carregar:', name, url, e);
+      }
+    }
+    async loadAll(map) {
+      await Promise.all(
+        Object.entries(map).map(([k, u]) => this.load(k, u))
+      );
+    }
+    unlockOnFirstGesture() {
+      window.addEventListener('pointerdown', this._unlock, true);
+      window.addEventListener('keydown', this._unlock, true);
+    }
+    _unlock() {
+      try { this.ctx.resume(); } catch { }
+      window.removeEventListener('pointerdown', this._unlock, true);
+      window.removeEventListener('keydown', this._unlock, true);
+    }
+    play(name, { volume = 1, rate = 1 } = {}) {
+      const buf = this.buffers[name];
+      if (!buf) return;
+      const src = this.ctx.createBufferSource();
+      src.buffer = buf;
+      src.playbackRate.value = rate;
 
-    // SFX
-    SFX = {
-      flap: cfg.assets?.sfx?.flap ? new SoundPool(cfg.assets.sfx.flap, 6) : null,
-      score: cfg.assets?.sfx?.score ? new SoundPool(cfg.assets.sfx.score, 4) : null,
-      hit: cfg.assets?.sfx?.hit ? new SoundPool(cfg.assets.sfx.hit, 3) : null,
+      const gain = this.ctx.createGain();
+      gain.gain.value = volume;
+
+      src.connect(gain).connect(this.ctx.destination);
+      try { src.start(this.ctx.currentTime); } catch { }
+    }
+  }
+  // ---------------------------------------------------------------
+
+  // 1) Carrega frames do pássaro (mantém ordem; filtra inválidas)
+  const frameUrls = Array.isArray(cfg.assets.birdFrames) ? cfg.assets.birdFrames : [];
+  const framePromises = frameUrls.map((src) => loadImageSafe(src));
+  const loadedFrames = await Promise.all(framePromises);
+  birdImgs = loadedFrames.filter(okImg);
+  applyDynamicBirdAutosize();
+
+  // 2) Carrega canos e gera máscaras
+  topPipeImg = await loadImageSafe(cfg.assets.topPipe);
+  if (!topPipeImg) console.warn('[assets] topPipe falhou:', cfg.assets.topPipe);
+  else {
+    try { pipeMaskTop = buildPipeMask(topPipeImg); } catch (e) { console.warn('mask top err:', e); }
+  }
+
+  bottomPipeImg = await loadImageSafe(cfg.assets.bottomPipe);
+  if (!bottomPipeImg) console.warn('[assets] bottomPipe falhou:', cfg.assets.bottomPipe);
+  else {
+    try { pipeMaskBottom = buildPipeMask(bottomPipeImg); } catch (e) { console.warn('mask bottom err:', e); }
+  }
+
+  // 3) BG
+  bgImg = await loadImageSafe(cfg.assets.bg);
+  if (!bgImg) console.warn('[assets] bg falhou:', cfg.assets.bg);
+
+  // 4) SFX — tenta Web Audio (latência baixa); fallback para SoundPool
+  try {
+    const hasWebAudio = !!(window.AudioContext || window.webkitAudioContext);
+    const sfxMap = {
+      flap: cfg.assets?.sfx?.flap || '',
+      score: cfg.assets?.sfx?.score || '',
+      hit: cfg.assets?.sfx?.hit || '',
     };
-  });
+
+    if (hasWebAudio && (sfxMap.flap || sfxMap.score || sfxMap.hit)) {
+      const engine = new WebAudioEngine();
+      await engine.loadAll(sfxMap);
+      // desbloqueia no 1º gesto do usuário (necessário em iOS/Android)
+      engine.unlockOnFirstGesture();
+
+      // mantém a API atual: SFX.xxx?.play()
+      SFX = {
+        flap: sfxMap.flap ? { play: () => engine.play('flap') } : null,
+        score: sfxMap.score ? { play: () => engine.play('score') } : null,
+        hit: sfxMap.hit ? { play: () => engine.play('hit') } : null,
+      };
+    } else {
+      // fallback para HTMLAudio em pool
+      SFX = {
+        flap: sfxMap.flap ? new SoundPool(sfxMap.flap, 6) : null,
+        score: sfxMap.score ? new SoundPool(sfxMap.score, 4) : null,
+        hit: sfxMap.hit ? new SoundPool(sfxMap.hit, 3) : null,
+      };
+    }
+  } catch (e) {
+    console.warn('[audio] erro, usando fallback:', e);
+    const aSfx = cfg.assets?.sfx || {};
+    SFX = {
+      flap: aSfx.flap ? new SoundPool(aSfx.flap, 6) : null,
+      score: aSfx.score ? new SoundPool(aSfx.score, 4) : null,
+      hit: aSfx.hit ? new SoundPool(aSfx.hit, 3) : null,
+    };
+  }
 }
+
 
 function applyDynamicBirdAutosize() {
   const percent = Number(cfg.bird?.sizePercentOfHeight || 0);
@@ -1712,6 +1783,51 @@ function disableRightClickGlobally() {
   window.addEventListener('mousedown', onMouseDown, opts);
   window.addEventListener('auxclick', onAuxClick, opts);
   window.addEventListener('contextmenu', onContextMenu, opts);
+}
+
+
+let audioEngine = null;
+
+class WebAudioEngine {
+  constructor() {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    this.ctx = new Ctx({ latencyHint: 'interactive' });
+    this.buffers = {};
+    this._unlock = this._unlock.bind(this);
+  }
+  async load(name, url) {
+    if (!url) return;
+    const res = await fetch(url, { cache: 'force-cache' });   // pega do cache quando possível
+    const ab = await res.arrayBuffer();
+    this.buffers[name] = await new Promise((ok, err) =>
+      this.ctx.decodeAudioData(ab, ok, err)
+    );
+  }
+  async loadAll(map) {
+    await Promise.all(Object.entries(map).map(([k, u]) => this.load(k, u)));
+  }
+  unlockOnFirstGesture() {
+    window.addEventListener('pointerdown', this._unlock, true);
+    window.addEventListener('keydown', this._unlock, true);
+  }
+  _unlock() {
+    try { this.ctx.resume(); } catch { }
+    window.removeEventListener('pointerdown', this._unlock, true);
+    window.removeEventListener('keydown', this._unlock, true);
+  }
+  play(name, { volume = 1, rate = 1 } = {}) {
+    const buf = this.buffers[name];
+    if (!buf) return;
+    const src = this.ctx.createBufferSource();
+    src.buffer = buf;
+    src.playbackRate.value = rate;
+
+    const gain = this.ctx.createGain();
+    gain.gain.value = volume;
+
+    src.connect(gain).connect(this.ctx.destination);
+    try { src.start(this.ctx.currentTime); } catch { }
+  }
 }
 
 
