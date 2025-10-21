@@ -213,12 +213,12 @@ export async function boot() {
   setupCanvas();
   await loadAssets();
   setupControls();
-
+  disableRightClickGlobally();
   // 4) overlays (start, top10, rank)
   ensureStartOverlay();
   ensureScoresOverlay();
   ensureRankOverlay();
-  ensureScoreHud();     
+  ensureScoreHud();
 
   // 5) tela inicial + BG passivo
   showStartOverlay();
@@ -581,7 +581,15 @@ function setupControls() {
   }, { capture: true });
 
   window.addEventListener('pointerdown', (e) => {
-    if (isTypingTarget(e) || uiLocked) return;
+    // não interfere em inputs/menus
+    if (isTypingTarget(e)) return;
+    if (uiLocked) return;
+
+    if (e.pointerType === 'mouse' && (e.button === 0 || e.buttons === 1)) {
+      return;
+    }
+
+    // Touch/pen (ou outros botões de mouse, se quiser manter) viram um "jump"
     onJumpKey({ code: cfg.controls.jump?.[0] || 'Space', repeat: false });
   }, { capture: true });
 
@@ -1098,6 +1106,18 @@ function ensureStartOverlay() {
   75%     { transform: translate(-50%,-48%); }
 }
     @keyframes hand-tap{0%,100%{transform:translate(0,0) scale(1)}40%{transform:translate(12px,12px) scale(.92)}60%{transform:translate(0,0) scale(1)}}
+
+
+#startOverlay .secret-corner{
+    position:absolute;
+    left:0; top:0;
+    width:min(12vw, 80px);
+    height:min(12vw, 80px);
+    pointer-events:auto;      /* precisa, pq #startOverlay tem pointer-events:none */
+    background:transparent;   /* deixe transparente; troque por rgba(255,0,0,.15) p/ debugar */
+    touch-action:none;        /* evita gestos padrão em mobile */
+  }
+
   `;
   document.head.appendChild(st);
 
@@ -1114,6 +1134,52 @@ function ensureStartOverlay() {
       </div>
     </div>
   `;
+  // Hotspot secreto para segurar 10s e abrir /config.html
+  const secret = document.createElement('div');
+  secret.className = 'secret-corner';
+  secret.setAttribute('aria-hidden', 'true');
+  startOverlay.appendChild(secret);
+
+  // Long-press de 10s no hotspot
+  const SECRET_HOLD_MS = 10000;     // 10 segundos
+  const MOVE_TOLERANCE_PX = 18;     // cancela se arrastar mais que isso
+  let holdTimer = null;
+  let startX = 0, startY = 0;
+
+  function cancelSecretHold() {
+    if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; }
+  }
+
+  function goToConfig() {
+    cancelSecretHold();
+    // usa joinBase para respeitar o base path (GitHub Pages)
+    location.assign(joinBase('config.html'));
+  }
+
+  secret.addEventListener('pointerdown', (e) => {
+    // só funciona quando a tela de start está visível
+    if (!startOverlay.classList.contains('show')) return;
+
+    e.preventDefault();
+    startX = e.clientX;
+    startY = e.clientY;
+    try { secret.setPointerCapture(e.pointerId); } catch { }
+
+    cancelSecretHold();
+    holdTimer = setTimeout(goToConfig, SECRET_HOLD_MS);
+  }, { passive: false });
+
+  secret.addEventListener('pointermove', (e) => {
+    if (!holdTimer) return;
+    const dx = e.clientX - startX;
+    const dy = e.clientY - startY;
+    if ((dx * dx + dy * dy) > (MOVE_TOLERANCE_PX * MOVE_TOLERANCE_PX)) {
+      cancelSecretHold();
+    }
+  });
+
+  ['pointerup', 'pointercancel', 'lostpointercapture', 'mouseleave', 'mouseout', 'blur']
+    .forEach(evt => secret.addEventListener(evt, cancelSecretHold));
   document.body.appendChild(startOverlay);
 
   document.getElementById('btnStart')?.addEventListener('click', (e) => { e.preventDefault(); startGame(); });
@@ -1133,6 +1199,8 @@ function showStartOverlay() {
   }
 }
 function hideStartOverlay() { startOverlay?.classList.remove('show'); uiLocked = false; }
+
+
 
 /* ============================= OVERLAY: TOP 10 ====================================== */
 function ensureScoresOverlay() {
@@ -1156,20 +1224,23 @@ function ensureScoresOverlay() {
     user-select:none; -webkit-user-drag:none;
   }
   #scoresOverlay .title{
-    width:100%; max-width:min(88vw, 520px);
-    margin-top:min(3vh, 22px); margin-bottom:8px;
-    font-weight:900; color:#fff;
-    font-size:clamp(22px, 5vh, 36px);
-    text-shadow:
-      -2px -2px 0 #0a0a0a, 2px -2px 0 #0a0a0a,
-      -2px  2px 0 #0a0a0a, 2px  2px 0 #0a0a0a,
-      0 2px 0 #0a0a0a;
-    user-select:none;
-    padding-left:calc((100% - min(30vw,520px))/2);
+    width: 100%;
+    max-width: min(88vw, 520px);
+    margin-top: min(10vh, 300px);
+    margin-bottom: 8px;
+    font-weight: 900;
+    color: #fff;
+    font-size: clamp(22px, 5vh, 64px);
+    text-shadow: -2px -2px 0 #0a0a0a, 2px -2px 0 #0a0a0a, -2px 2px 0 #0a0a0a, 2px 2px 0 #0a0a0a, 0 2px 0 #0a0a0a;
+    user-select: none;
+    padding-left: calc((100% - min(85vw, 964px)) / 2);
   }
   #scoresOverlay .list{
-    width:100%; max-width:min(88vw, 520px);
-    height:100%; overflow:auto; padding:4px 8px 24px 8px;
+ width: 100%;
+    max-width: min(91vw, 563px);
+    height: 100%;
+    overflow: auto;
+    padding: 4px 8px 24px 8px;
   }
   #scoresOverlay .item{
     display:grid; grid-template-columns: 48px 1fr auto; align-items:center;
@@ -1552,6 +1623,41 @@ function showScoreHud(show) {
   scoreHudEl.style.display = show ? 'block' : 'none';
   scoreHudVisible = !!show;
 }
+
+// Bloqueia RIGHT CLICK (mouse) globalmente + menu de contexto
+function disableRightClickGlobally() {
+  const opts = { capture: true };
+
+  const stop = (e) => {
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    return false;
+  };
+
+  // Bloqueia botão direito já no início do evento
+  const onPointerDown = (e) => {
+    if (e.pointerType === 'mouse' && (e.button === 2 || e.buttons === 2)) stop(e);
+  };
+
+  const onMouseDown = (e) => {
+    if (e.button === 2) stop(e);
+  };
+
+  // Alguns navegadores disparam 'auxclick' para botão do meio/direito
+  const onAuxClick = (e) => {
+    if (e.button === 2) stop(e);
+  };
+
+  // Garante que o menu de contexto não abra (inclui ctrl+click no mac)
+  const onContextMenu = (e) => stop(e);
+
+  window.addEventListener('pointerdown', onPointerDown, opts);
+  window.addEventListener('mousedown', onMouseDown, opts);
+  window.addEventListener('auxclick', onAuxClick, opts);
+  window.addEventListener('contextmenu', onContextMenu, opts);
+}
+
+
 
 
 /* ============================= HELPERS GERAIS ======================================= */
