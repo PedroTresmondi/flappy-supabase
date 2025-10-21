@@ -244,8 +244,8 @@
                                 <div><b>Client:</b> client@local </div>
                         </div>
                         <div id="authMsg" class="hint" style="margin-top:8px"></div>
-                        </div>
-                        </div>
+                </div>
+                </div>
 
         <!-- APP -->
         <div class="wrap" id="appView" style="display:none">
@@ -316,7 +316,7 @@
                                 <legend>Physics</legend>
                                 <div class="row"><label for="physics.gravity">Gravity</label><input type="number" id="physics.gravity" step="0.01">
                                 </div>
-                                </fieldset>
+                        </fieldset>
 
                         <!-- MASTER: Pipes -->
                         <fieldset class="group" data-role-guard="master">
@@ -340,12 +340,27 @@
                         <!-- SEMPRE: Difficulty -->
                         <fieldset class="group" data-scope="difficulty">
                                 <legend>Difficulty (Cliente pode editar)</legend>
-                                <div class="row"><label for="difficulty.rampEnabled">Ramp enabled (score)</label><input type="checkbox"
-                                                id="difficulty.rampEnabled"></div>
-                                <div class="row"><label for="difficulty.speedPerScore">+Speed per score</label><input type="number"
-                                                id="difficulty.speedPerScore" step="0.01"></div>
-                                <div class="row"><label for="difficulty.minGapPercent">Min gap (%)</label><input type="number"
-                                                id="difficulty.minGapPercent" step="0.1"></div>
+<!-- Presets (cliente) -->
+<div class="row">
+        <label for="difficultyPreset">Preset</label>
+        <div style="display:flex; gap:8px; align-items:center">
+                <select class="input" id="difficultyPreset" style="min-width:160px">
+                        <option value="custom">Custom</option>
+                        <option value="easy">Fácil</option>
+                        <option value="medium" selected>Médio</option>
+                        <option value="hard">Difícil</option>
+                </select>
+                <button class="btn" id="applyPreset" type="button">Aplicar</button>
+        </div>
+</div>
+
+
+<div class="row"><label for="difficulty.rampEnabled">Ramp enabled (score)</label><input type="checkbox"
+                id="difficulty.rampEnabled"></div>
+<div class="row"><label for="difficulty.speedPerScore">+Speed per score</label><input type="number"
+                id="difficulty.speedPerScore" step="0.01"></div>
+<div class="row"><label for="difficulty.minGapPercent">Min gap (%)</label><input type="number"
+                id="difficulty.minGapPercent" step="0.1"></div>
                                 <div class="row"><label for="difficulty.gapStepPerScore">-Gap per score
                                                 (%)</label><input type="number" id="difficulty.gapStepPerScore" step="0.1"></div>
                                 <hr style="border:none;border-top:1px solid var(--line);margin:6px 0">
@@ -360,7 +375,7 @@
                                                 id="difficulty.timeMaxExtraSpeed" step="0.1"></div>
                                 <div class="row"><label for="difficulty.timeGapStepPerSec">-Gap per second
                                                 (%)</label><input type="number" id="difficulty.timeGapStepPerSec" step="0.01"></div>
-                                
+
                                 <hr style="border:none;border-top:1px solid var(--line);margin:6px 0">
                                 <div class="row"><label for="difficulty.stepEveryMs">Step interval (ms)</label>
                                         <input type="number" id="difficulty.stepEveryMs" step="1" placeholder="2000">
@@ -373,20 +388,19 @@
                                                 (px/frame)</label>
                                         <input type="number" id="difficulty.stepMaxExtraPxPerFrame" step="0.1" placeholder="6">
                                 </div>
-                                
-                                </fieldset>
-                                
-                                <fieldset class="group" data-scope="prizes">
-                                        <legend>Grupos / Prêmios (Cliente pode editar)</legend>
-                                
-                                        <div id="prizeGroups" style="display:flex;flex-direction:column;gap:8px"></div>
-                                
-                                        <div style="display:flex;gap:8px;align-items:center;margin-top:8px">
-                                                <button class="btn" id="btnAddPrize" type="button">+ Adicionar grupo</button>
-                                                <span class="hint">Regra: faixas <b>[min, max)</b> (max exclusivo). O último
-                                                        grupo aceita max inclusivo.</span>
-                                        </div>
-                                </fieldset>
+</fieldset>
+
+<fieldset class="group" data-scope="prizes">
+        <legend>Grupos / Prêmios (Cliente pode editar)</legend>
+
+        <div id="prizeGroups" style="display:flex;flex-direction:column;gap:8px"></div>
+
+        <div style="display:flex;gap:8px;align-items:center;margin-top:8px">
+                <button class="btn" id="btnAddPrize" type="button">+ Adicionar grupo</button>
+                <span class="hint">Regra: faixas <b>[min, max)</b> (max exclusivo). O último
+                        grupo aceita max inclusivo.</span>
+        </div>
+</fieldset>
 
 
                         <!-- MASTER: Spawn -->
@@ -394,7 +408,7 @@
                                 <legend>Spawn</legend>
                                 <div class="row"><label for="spawn.intervalMs">Interval (ms)</label><input type="number" id="spawn.intervalMs" step="1">
                                 </div>
-                                </fieldset>
+                        </fieldset>
 
                         <!-- MASTER: Scoring -->
                         <fieldset class="group" data-role-guard="master">
@@ -406,7 +420,8 @@
                         <!-- MASTER: UI -->
                         <fieldset class="group" data-role-guard="master">
                                 <legend>UI</legend>
-                                <div class="row"><label for="ui.font">Font</label><input type="text" id="ui.font" placeholder="45px sans-serif"></div>
+                                <div class="row"><label for="ui.font">Font</label><input type="text" id="ui.font"
+                                                placeholder="45px sans-serif"></div>
                                 <div class="row"><label for="ui.scoreColor">Score color</label><input type="text" id="ui.scoreColor"
                                                 placeholder="#ffffff"></div>
                                 <div class="row"><label for="ui.gameOverText">GameOver text</label><input type="text" id="ui.gameOverText"
@@ -431,13 +446,13 @@
                         <div id="scoresList">
                                 <div class="hint">Carregando…</div>
                         </div>
-                
+
                         <h2 style="margin-top:22px">Prévia do JSON</h2>
                         <pre id="jsonPreview">{}</pre>
                         <div id="status"></div>
                         <p class="hint">Cliente edita apenas <b>Difficulty</b>. Master edita tudo.</p>
                 </div>
-                </div>
+        </div>
 
         <script>document.addEventListener('contextmenu', e => e.preventDefault());</script>
         <script type="module" src="./src/config.js"></script>

@@ -17,6 +17,89 @@ let state = {};
 let role = 'client'; // 'master' | 'client'
 let lastScoresCache = [];
 
+// ---------------------- Difficulty Presets (cliente) --------------------------
+const DIFFICULTY_PRESETS = {
+  // “demora mais pra aumentar”
+  easy: {
+    rampEnabled: false,          // foca na progressão por tempo
+    minGapPercent: 22,
+    gapStepPerScore: 0.0,
+    timeRampEnabled: true,
+    timeStartDelayMs: 0,
+    timeSpeedPerSec: 0.015,
+    timeMaxExtraSpeed: 3,
+    timeGapStepPerSec: 0.005,
+    stepEveryMs: 3500,
+    stepAddPxPerFrame: 0.15,
+    stepMaxExtraPxPerFrame: 3,
+  },
+
+  // “linearidade normal”
+  medium: {
+    rampEnabled: false,
+    minGapPercent: 20,
+    gapStepPerScore: 0.0,
+    timeRampEnabled: true,
+    timeStartDelayMs: 0,
+    timeSpeedPerSec: 0.03,
+    timeMaxExtraSpeed: 5,
+    timeGapStepPerSec: 0.02,
+    stepEveryMs: 2000,
+    stepAddPxPerFrame: 0.30,
+    stepMaxExtraPxPerFrame: 6,
+  },
+
+  // “aumenta com mais frequência”
+  hard: {
+    rampEnabled: false,
+    minGapPercent: 18,
+    gapStepPerScore: 0.0,
+    timeRampEnabled: true,
+    timeStartDelayMs: 0,
+    timeSpeedPerSec: 0.06,
+    timeMaxExtraSpeed: 8,
+    timeGapStepPerSec: 0.035,
+    stepEveryMs: 1200,
+    stepAddPxPerFrame: 0.45,
+    stepMaxExtraPxPerFrame: 9,
+  },
+};
+
+const PRESET_KEYS = Object.keys(DIFFICULTY_PRESETS);
+
+function nearlyEqual(a, b, eps = 1e-9) {
+  if (a === b) return true;
+  if (typeof a !== 'number' || typeof b !== 'number') return false;
+  return Math.abs(a - b) <= eps;
+}
+
+// tenta detectar qual preset bate com o objeto de difficulty atual
+function detectPresetFromState(diff) {
+  if (!diff) return 'custom';
+  for (const name of PRESET_KEYS) {
+    const preset = DIFFICULTY_PRESETS[name];
+    let ok = true;
+    for (const k of Object.keys(preset)) {
+      const pv = preset[k];
+      const dv = diff[k];
+      ok = (typeof pv === 'number') ? nearlyEqual(Number(dv), Number(pv)) : (dv === pv);
+      if (!ok) break;
+    }
+    if (ok) return name;
+  }
+  return 'custom';
+}
+
+// aplica um preset “por cima” do state.difficulty, mantendo o resto intacto
+function applyDifficultyPreset(name) {
+  const preset = DIFFICULTY_PRESETS[name];
+  if (!preset) return;
+  state.difficulty = { ...(state.difficulty || {}), ...preset };
+  fillForm(state);   // rehidrata inputs
+  updatePreview();
+  flash(`Preset "${name}" aplicado ✔`);
+}
+
 // ------------------------------ DOM helpers -----------------------------------
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => Array.from(document.querySelectorAll(s));
@@ -155,6 +238,7 @@ function normalizePrizes(prizes) {
       name: String(g?.name ?? '').trim() || 'Grupo',
     }))
     .filter(g => Number.isFinite(g.min) && Number.isFinite(g.max) && g.max >= g.min);
+
   clean.sort((a, b) => (a.min - b.min) || (a.max - b.max));
   return clean;
 }
@@ -200,7 +284,6 @@ function renderPrizeGroups() {
       const v = e.target.value === '' ? null : Number(e.target.value);
       state.prizes[idx].min = v;
       updatePreview();
-      // re-render painéis usando cache
       if (lastScoresCache?.length) { renderScoresByGroups(lastScoresCache); }
     });
     row.querySelector('.input-max').addEventListener('input', e => {
@@ -294,6 +377,13 @@ function fillForm(cfg) {
   ensurePrizeArray();
   renderPrizeGroups();
   updatePreview();
+
+  // seleciona o preset que mais se aproxima do que está no state
+  const presetSel = $('#difficultyPreset');
+  if (presetSel) {
+    const which = detectPresetFromState(cfg?.difficulty || {});
+    presetSel.value = which;
+  }
 }
 function onInputChange(e) {
   const input = e.target;
@@ -318,8 +408,12 @@ function onInputChange(e) {
   setDeep(state, path, value);
   updatePreview();
 
-  // se alterou difficulty/prizes, re-render grupos
   if (path[0] === 'difficulty' || path[0] === 'prizes') {
+    // qualquer edição manual de difficulty sinaliza “custom”
+    if (path[0] === 'difficulty') {
+      const presetSel = $('#difficultyPreset');
+      if (presetSel) presetSel.value = 'custom';
+    }
     if (lastScoresCache?.length) {
       renderScoresByGroups(lastScoresCache);
     }
@@ -333,6 +427,23 @@ function attachInputListeners() {
     if (input.type === 'checkbox' || input.type === 'range') {
       input.addEventListener('change', onInputChange);
     }
+  }
+}
+
+function wireDifficultyPresetControls() {
+  const sel = $('#difficultyPreset');
+  const btn = $('#applyPreset');
+
+  if (btn && !btn.dataset.bound) {
+    btn.dataset.bound = '1';
+    btn.addEventListener('click', () => {
+      const name = (sel?.value || 'custom');
+      if (name === 'custom') {
+        flash('Escolha Fácil, Médio ou Difícil para aplicar.', true);
+        return;
+      }
+      applyDifficultyPreset(name);
+    });
   }
 }
 
@@ -511,4 +622,5 @@ window.addEventListener('DOMContentLoaded', async () => {
   wireHeader();
   wireAuthView();
   attachInputListeners();
+  wireDifficultyPresetControls();
 });
