@@ -1182,24 +1182,28 @@ function ensureStartOverlay() {
       </div>
     </div>
   `;
-  // Hotspot secreto para segurar 10s e abrir /config.html
+
+  // Hotspot secreto: 5 toques no canto superior esquerdo abre /config.html
   const secret = document.createElement('div');
   secret.className = 'secret-corner';
   secret.setAttribute('aria-hidden', 'true');
   startOverlay.appendChild(secret);
 
-  // Long-press de 10s no hotspot
-  const SECRET_HOLD_MS = 10000;     // 10 segundos
-  const MOVE_TOLERANCE_PX = 18;     // cancela se arrastar mais que isso
-  let holdTimer = null;
-  let startX = 0, startY = 0;
+  const TAP_COUNT_REQUIRED = 5;     // quantos toques
+  const TAP_WINDOW_MS = 2500;       // janela máxima para completar a sequência (ms)
 
-  function cancelSecretHold() {
-    if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; }
+  let tapCount = 0;
+  let firstTapTs = 0;
+  let resetTimer = null;
+
+  function resetTaps() {
+    tapCount = 0;
+    firstTapTs = 0;
+    if (resetTimer) { clearTimeout(resetTimer); resetTimer = null; }
   }
 
   function goToConfig() {
-    cancelSecretHold();
+    resetTaps();
     // usa joinBase para respeitar o base path (GitHub Pages)
     location.assign(joinBase('config.html'));
   }
@@ -1209,25 +1213,30 @@ function ensureStartOverlay() {
     if (!startOverlay.classList.contains('show')) return;
 
     e.preventDefault();
-    startX = e.clientX;
-    startY = e.clientY;
-    try { secret.setPointerCapture(e.pointerId); } catch { }
 
-    cancelSecretHold();
-    holdTimer = setTimeout(goToConfig, SECRET_HOLD_MS);
+    const now = performance.now();
+
+    // reinicia a contagem se estourar a janela
+    if (tapCount === 0 || (now - firstTapTs) > TAP_WINDOW_MS) {
+      tapCount = 1;
+      firstTapTs = now;
+    } else {
+      tapCount++;
+    }
+
+    // agenda/reset o timer de expiração da sequência
+    if (resetTimer) clearTimeout(resetTimer);
+    resetTimer = setTimeout(resetTaps, TAP_WINDOW_MS);
+
+    if (tapCount >= TAP_COUNT_REQUIRED) {
+      goToConfig();
+    }
   }, { passive: false });
 
-  secret.addEventListener('pointermove', (e) => {
-    if (!holdTimer) return;
-    const dx = e.clientX - startX;
-    const dy = e.clientY - startY;
-    if ((dx * dx + dy * dy) > (MOVE_TOLERANCE_PX * MOVE_TOLERANCE_PX)) {
-      cancelSecretHold();
-    }
-  });
+  // Em qualquer “cancelamento” provável, zera a sequência
+  ['pointercancel', 'lostpointercapture', 'mouseleave', 'mouseout', 'blur']
+    .forEach(evt => secret.addEventListener(evt, resetTaps));
 
-  ['pointerup', 'pointercancel', 'lostpointercapture', 'mouseleave', 'mouseout', 'blur']
-    .forEach(evt => secret.addEventListener(evt, cancelSecretHold));
   document.body.appendChild(startOverlay);
 
   document.getElementById('btnStart')?.addEventListener('click', (e) => { e.preventDefault(); startGame(); });
