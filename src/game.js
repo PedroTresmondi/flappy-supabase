@@ -65,10 +65,19 @@ async function fetchRemoteConfigFromSupabase(slug = CONFIG_SLUG) {
   }
 }
 
+// sons padrão
+const DEFAULT_SFX = {
+  flap: 'assets/sounds/sfx_wing.wav',
+  score: 'assets/sounds/sfx_point.wav',
+  hit: 'assets/sounds/sfx_hit.wav',
+};
+
+
 const DEFAULT_CONFIG = {
   board: { width: BASE_W, height: BASE_H, background: '#70c5ce' },
   assets: { ...DEFAULT_ASSETS, sfx: { flap: '', score: '', hit: '' } },
   bg: { parallaxFactor: 0.5, fixedPxPerSec: 0 },
+  sfx: { flap: DEFAULT_SFX.flap, score: DEFAULT_SFX.score, hit: DEFAULT_SFX.hit },
   bird: {
     width: 34, height: 24,
     startXPercent: 12.5, startYPercent: 50,
@@ -324,15 +333,27 @@ async function loadConfigSanitized() {
 
 function sanitizeAssets(a) {
   const out = { ...DEFAULT_ASSETS };
+
+  // frames / sprites
   const frames = Array.isArray(a?.birdFrames) ? a.birdFrames : [];
   const cleaned = frames.map(normalizeAssetPath).filter(Boolean);
   out.birdFrames = cleaned.length ? unique(cleaned) : DEFAULT_ASSETS.birdFrames;
   out.topPipe = normalizeAssetPath(a?.topPipe) || DEFAULT_ASSETS.topPipe;
   out.bottomPipe = normalizeAssetPath(a?.bottomPipe) || DEFAULT_ASSETS.bottomPipe;
   out.bg = normalizeAssetPath(a?.bg) || DEFAULT_ASSETS.bg || '';
-  out.sfx = a?.sfx || { flap: '', score: '', hit: '' };
+
+  // sons (normaliza e aplica defaults)
+  const aSfx = a?.sfx || {};
+  out.sfx = {
+    flap: normalizeAssetPath(aSfx.flap) || normalizeAssetPath(DEFAULT_SFX.flap),
+    score: normalizeAssetPath(aSfx.score) || normalizeAssetPath(DEFAULT_SFX.score),
+    hit: normalizeAssetPath(aSfx.hit) || normalizeAssetPath(DEFAULT_SFX.hit),
+  };
+
   return out;
 }
+
+
 function normalizeAssetPath(p) {
   if (!p) return '';
   const s = String(p).trim();
@@ -454,6 +475,34 @@ function updateHudOverlayRect() {
 }
 
 // ================== ASSETS / MÁSCARAS DE CANO ==================
+class SoundPool {
+  constructor(src, size = 4) {
+    this.src = src || '';
+    this.pool = [];
+    this.idx = 0;
+    this.enabled = !!this.src;
+    if (this.enabled) {
+      for (let i = 0; i < size; i++) {
+        const a = new Audio(this.src);
+        a.preload = 'auto';
+        a.crossOrigin = 'anonymous';
+        this.pool.push(a);
+      }
+    }
+  }
+  play() {
+    if (!this.enabled || !this.pool.length) return;
+    const a = this.pool[this.idx];
+    this.idx = (this.idx + 1) % this.pool.length;
+    try {
+      a.currentTime = 0; // reinicia para toques rápidos
+      a.play().catch(() => { });
+    } catch { }
+  }
+}
+
+
+
 function loadAssets() {
   return new Promise((resolve) => {
     const frames = cfg.assets.birdFrames || [];
@@ -507,10 +556,11 @@ function loadAssets() {
       done();
     }
 
-    ['flap', 'score', 'hit'].forEach(k => {
-      const url = cfg.assets?.sfx?.[k];
-      if (url) { const a = new Audio(url); a.preload = 'auto'; SFX[k] = a; }
-    });
+    SFX = {
+      flap: cfg.assets?.sfx?.flap ? new SoundPool(cfg.assets.sfx.flap, 6) : null,
+      score: cfg.assets?.sfx?.score ? new SoundPool(cfg.assets.sfx.score, 4) : null,
+      hit: cfg.assets?.sfx?.hit ? new SoundPool(cfg.assets.sfx.hit, 3) : null,
+    };
   });
 }
 
