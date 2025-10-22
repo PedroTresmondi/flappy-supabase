@@ -203,6 +203,9 @@ let death = { active: false, hitTs: 0, flashEnd: 0, freezeUntil: 0, holdY: 0, ho
 let saveOnce = false; // evita salvar duas vezes a mesma run
 let savePromise = null;
 
+let tapHintEl = null;
+
+
 /* ============================= BOOT / STARTUP ======================================= */
 export async function boot() {
   // 1) fonte para DOM + canvas
@@ -218,6 +221,7 @@ export async function boot() {
   // 3) preparo de runtime
   setupCanvas();
   await loadAssets();
+  ensureTapHint();
   setupControls();
   disableRightClickGlobally();
   // 4) overlays (start, top10, rank)
@@ -268,6 +272,8 @@ export async function startGame() {
 
   running = true;
   showScoreHud(true);
+  showTapHint();
+
   rafId = requestAnimationFrame(tick);
 }
 
@@ -724,6 +730,7 @@ function onJumpKey(e) {
   const minInt = Math.max(0, cfg.controls.minFlapIntervalMs || 0);
   if (lastFlapTs >= 0 && now - lastFlapTs < minInt) return;
   lastFlapTs = now;
+  if (!gameStarted) hideTapHint();
 
   if (!gameStarted) {
     gameStarted = true;
@@ -960,6 +967,53 @@ function scheduleNextSpawn(spawnNow = false) {
 }
 
 /* ============================= HUD / PÁSSARO / TILT ================================= */
+
+
+/* ============================= TAP TO START HINT ==================================== */
+function ensureTapHint() {
+  if (!document.getElementById('tapHintStyles')) {
+    const st = document.createElement('style');
+    st.id = 'tapHintStyles';
+    st.textContent = `
+      #tapHint{position:fixed;inset:0;display:none;z-index:650;pointer-events:none}
+      #tapHint.show{display:block}
+      #tapHint .center{
+        position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);
+        display:flex;flex-direction:column;align-items:center;gap:min(2vh,14px);
+      }
+      #tapHint .hand{
+        width:min(22vw,160px);
+        image-rendering:pixelated;image-rendering:crisp-edges;
+        animation:hand-tap 1.15s ease-in-out infinite;
+        filter:drop-shadow(0 2px 0 rgba(0,0,0,.25));
+      }
+      #tapHint .txt{
+        color:#ffffff; font-weight:900; letter-spacing:.6px;
+        font-size:clamp(18px,3.8vh,32px); opacity:.88;
+        text-shadow:-2px -2px 0 #0b0b0b, 2px -2px 0 #0b0b0b, -2px 2px 0 #0b0b0b, 2px 2px 0 #0b0b0b;
+        user-select:none;
+      }
+    `;
+    document.head.appendChild(st);
+  }
+
+  if (!tapHintEl) {
+    tapHintEl = document.createElement('div');
+    tapHintEl.id = 'tapHint';
+    tapHintEl.innerHTML = `
+      <div class="center">
+        ${UI_ASSETS.hand ? `<img class="hand" src="${UI_ASSETS.hand}" alt="tap">` : ''}
+        <div class="txt">toque para começar</div>
+      </div>
+    `;
+    document.body.appendChild(tapHintEl);
+  }
+}
+function showTapHint() { tapHintEl?.classList.add('show'); }
+function hideTapHint() { tapHintEl?.classList.remove('show'); }
+
+
+
 function updateBirdTilt(tFactor) {
   const tcfg = cfg.bird.tilt;
   if (!tcfg?.enabled) { birdTiltDeg = 0; return; }
@@ -1314,6 +1368,8 @@ function ensureStartOverlay() {
   document.getElementById('btnScores')?.addEventListener('click', (e) => { e.preventDefault(); showScoresOverlay(); });
 }
 function showStartOverlay() {
+  hideTapHint();
+
   startOverlay?.classList.add('show');
   uiLocked = true;
   startBgLoop();
@@ -1429,6 +1485,7 @@ function ensureScoresOverlay() {
 }
 
 async function showScoresOverlay() {
+  hideTapHint();
   hideStartOverlay();
   ensureScoresOverlay();
   scoresOverlay?.classList.add('show');
@@ -1646,7 +1703,7 @@ function finalizeAndReset() {
       caches.keys().then(keys => keys.forEach(k => caches.delete(k))).catch(() => { });
     }
   } catch { }
-
+  hideTapHint();
   stopGameLoop();
   stopSpawning();
   running = false;
