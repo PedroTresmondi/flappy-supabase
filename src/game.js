@@ -328,7 +328,7 @@ async function loadConfigSanitized() {
 
   // remoto (Supabase)
   try {
-    const remote = await fetchRemoteConfigFromSupabase();
+    const remote = await fetchRemoteConfig();
     if (remote) merged = deepMerge(merged, remote);
   } catch (e) {
     console.warn('[config] falha Supabase:', e);
@@ -1498,7 +1498,7 @@ async function showScoresOverlay() {
   list.innerHTML = `<div class="name" style="opacity:.8;padding:10px 0">Carregando…</div>`;
 
   try {
-    const rows = await fetchTop10FromSupabase();
+    const rows = await fetchTop10();
     renderTop10ListTo(list, rows);
   } catch (e) {
     console.warn('[Top10] erro ao buscar:', e);
@@ -1620,6 +1620,132 @@ function showRankOverlay(finalScore, rankPos) {
 }
 function hideRankOverlay() { rankOverlay?.classList.remove('show'); uiLocked = false; }
 
+// ============================= BACKEND TOGGLE (Supabase <-> PlanB API) =============================
+// 'supabase' | 'planb' | 'auto' (tenta supabase, cai para planb se falhar/ausente)
+const BACKEND = (localStorage.getItem('flappy:backend') || 'auto').toLowerCase();
+const PLANB_API = localStorage.getItem('flappy:planbApi') || 'http://localhost:8787';
+
+// --- helpers HTTP para a PlanB API ---
+async function apiGet(path) {
+  const res = await fetch(`${PLANB_API}${path}`, { credentials: 'omit' });
+  if (!res.ok) throw new Error(`GET ${path} -> ${res.status}`);
+  return res.json();
+}
+async function apiPost(path, body) {
+  const res = await fetch(`${PLANB_API}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'omit',
+    body: JSON.stringify(body || {}),
+  });
+  if (!res.ok) throw new Error(`POST ${path} -> ${res.status}`);
+  return res.json?.() ?? null;
+}
+
+// --- implementações PlanB (espelham Supabase) ---
+async function salvarScorePlanB(pontos) {
+  const player = getLocalPlayer();
+  const payload = {
+    run_id: String(runId),
+    player_name: player.nome || 'Anônimo',
+    score: Number(pontos),
+    played_at: new Date().toISOString(),
+    prize_group: determinePrizeGroup(Number(pontos)) || null,
+    meta: {
+      startedAt: runStartISO,
+      durationMs: Math.max(0, Math.round(performance.now() - runStartPerf)),
+      activeTimeMs: Math.max(0, Math.round(activeTimeMs)),
+      board: { w: cfg?.board?.width, h: cfg?.board?.height },
+      version: 1,
+    },
+  };
+  await apiPost('/scores', payload);
+}
+
+async function fetchRankForScorePlanB(finalScore) {
+  const js = await apiGet(`/scores/rank?score=${encodeURIComponent(Number(finalScore) || 0)}`);
+  return (typeof js?.position === 'number') ? js.position : null;
+}
+
+async function fetchTop10PlanB() {
+  return await apiGet('/scores/top10'); // [{player_name, score, played_at}]
+}
+
+async function fetchRemoteConfigPlanB(slug = CONFIG_SLUG) {
+  try {
+    const js = await apiGet(`/config/${encodeURIComponent(slug)}`);
+    return js?.data || null;
+  } catch { return null; }
+}
+
+// --- WRAPPERS unificados (use estes no resto do código) ---
+async function salvarScore(pontos) {
+  if (BACKEND === 'planb') return salvarScorePlanB(pontos);
+  if (BACKEND === 'supabase') {
+    if (!supabase) throw new Error('Supabase indisponível');
+    return salvarScoreNoSupabase(pontos);
+  }
+  // AUTO: tenta supabase -> fallback planb
+  if (supabase) {
+    try { return await salvarScoreNoSupabase(pontos); } catch (e) {
+      console.warn('[AUTO] Supabase falhou, fallback PlanB:', e);
+    }
+  }
+  return salvarScorePlanB(pontos);
+}
+
+async function fetchRank(finalScore) {
+  if (BACKEND === 'planb') return fetchRankForScorePlanB(finalScore);
+  if (BACKEND === 'supabase') {
+    if (!supabase) throw new Error('Supabase indisponível');
+    return fetchRankForScore(finalScore);
+  }
+  // AUTO
+  if (supabase) {
+    try {
+      const pos = await fetchRankForScore(finalScore);
+      if (pos != null) return pos;
+    } catch (e) { console.warn('[AUTO] rank supabase erro:', e); }
+  }
+  return fetchRankForScorePlanB(finalScore);
+}
+
+async function fetchTop10() {
+  if (BACKEND === 'planb') return fetchTop10PlanB();
+  if (BACKEND === 'supabase') {
+    if (!supabase) throw new Error('Supabase indisponível');
+    return fetchTop10FromSupabase();
+  }
+  // AUTO: prefere supabase; se vier vazio, tenta planb
+  if (supabase) {
+    try {
+      const a = await fetchTop10FromSupabase();
+      if (Array.isArray(a) && a.length) return a;
+      // se vazio, ainda tenta PlanB (útil no dia do plano B)
+    } catch (e) { console.warn('[AUTO] top10 supabase erro:', e); }
+  }
+  return fetchTop10PlanB();
+}
+
+async function fetchRemoteConfig(slug = CONFIG_SLUG) {
+  if (BACKEND === 'planb') return fetchRemoteConfigPlanB(slug);
+  if (BACKEND === 'supabase') {
+    if (!supabase) throw new Error('Supabase indisponível');
+    return fetchRemoteConfigFromSupabase(slug);
+  }
+  // AUTO: tenta supabase, cai p/ planb se vier null/erro
+  if (supabase) {
+    try {
+      const js = await fetchRemoteConfigFromSupabase(slug);
+      if (js) return js;
+    } catch (e) { console.warn('[AUTO] config supabase erro:', e); }
+  }
+  return fetchRemoteConfigPlanB(slug);
+}
+
+
+
+
 /* ============================= SUPABASE / RANK ====================================== */
 async function salvarScoreNoSupabase(pontos) {
   if (!supabase) return;
@@ -1675,11 +1801,12 @@ async function handleGameOverSave() {
 
   // Dispara save + rank em paralelo
   savePromise = (async () => {
-    const saveP = salvarScoreNoSupabase(score)
-      .catch(e => console.warn('[Supabase] falha ao salvar:', e));
+    const saveP = salvarScore(score)
+      .catch(e => console.warn('[Score] falha ao salvar:', e));
 
-    const rankP = fetchRankForScore(score)
-      .catch(e => { console.warn('[Supabase] rank erro:', e); return null; });
+    const rankP = fetchRank(score)
+      .catch(e => { console.warn('[Rank] erro:', e); return null; });
+
 
     const [, rankRes] = await Promise.allSettled([saveP, rankP]);
     const pos = (rankRes.status === 'fulfilled') ? rankRes.value : null;
