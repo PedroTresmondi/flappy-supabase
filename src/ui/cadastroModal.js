@@ -3,9 +3,9 @@
 
 const STORAGE_KEY = "flappy:player";
 
-let overlay, inputName, errEl, ctaWrap;
+let overlay, inputName, inputSurname, errEl, ctaWrap;
 // teclado
-let kbFloat, kbRoot, repeatTimer = 0;
+let kbFloat, kbRoot, repeatTimer = 0, currentInput = null;
 // termos
 let termsOverlay, termsChk, termsOpenLink;
 
@@ -65,6 +65,7 @@ function ensureStyles() {
     caret-color:#fff;
   }
   #cadOverlay .line-input::placeholder{ color:#ffffffcc }
+  #cadOverlay .line-input.active{ border-bottom-color:#fff }
   #cadOverlay .line{ width:min(86vw,640px); height:0; border-bottom:4px solid #ffffff33; margin-top:-12px }
 
   /* Checkbox "linha" (visual custom) */
@@ -207,6 +208,10 @@ function ensureDom() {
         <input id="cadName" class="line-input" type="text" placeholder="Seu nome" maxlength="40" autocomplete="off" />
         <div class="line"></div>
 
+        <div class="label">Sobrenome</div>
+        <input id="cadSurname" class="line-input" type="text" placeholder="Seu sobrenome" maxlength="40" autocomplete="off" />
+        <div class="line"></div>
+
         <!-- Checkbox estilo linha -->
         <div class="termsRow" id="cadTermsRow">
           <div class="fakebox" id="cadTermsBox" aria-hidden="true"></div>
@@ -218,7 +223,7 @@ function ensureDom() {
         <div id="cadErr" class="err"></div>
       </div>
 
-      <div class="cta" id="cadCta" aria-label="Confirmar nome e começar">
+      <div class="cta" id="cadCta" aria-label="Confirmar e começar">
         ${arrows}
         ${ASSETS.heroBird ? `<img class="hero" src="${ASSETS.heroBird}" alt="bird">` : ""}
         ${ASSETS.hand ? `<img class="hand" src="${ASSETS.hand}" alt="tap">` : ""}
@@ -258,6 +263,7 @@ function ensureDom() {
 
   // refs
   inputName = overlay.querySelector("#cadName");
+  inputSurname = overlay.querySelector("#cadSurname");
   errEl = overlay.querySelector("#cadErr");
   ctaWrap = overlay.querySelector("#cadCta");
   termsChk = overlay.querySelector("#cadTermsBox");
@@ -269,11 +275,19 @@ function ensureDom() {
   });
 
   // bloquear teclado nativo (usar virtual)
-  inputName.setAttribute("readonly", "true");
-  inputName.addEventListener("focus", () => inputName.blur());
+  [inputName, inputSurname].forEach((inp) => {
+    inp.setAttribute("readonly", "true");
+    inp.addEventListener("focus", () => inp.blur());
+    // Selecionar campo ativo para o teclado virtual
+    inp.addEventListener("pointerdown", (e) => {
+      e.preventDefault();
+      setActiveInput(inp);
+    }, { passive: false });
+  });
 
   // interações
   inputName.addEventListener("input", updateEnabledState);
+  inputSurname.addEventListener("input", updateEnabledState);
   ctaWrap.addEventListener("click", () => trySave());
   window.addEventListener("keydown", (e) => { if (e.key === "Enter" && overlay?.classList.contains("show")) trySave(); });
 
@@ -291,7 +305,17 @@ function ensureDom() {
     if (e.target === termsOverlay) closeTermsOverlay(true); // toque fora => aceitar
   });
 
+  // default campo ativo: nome
+  setActiveInput(inputName);
+
   updateEnabledState();
+}
+
+function setActiveInput(inp) {
+  currentInput = inp || inputName;
+  [inputName, inputSurname].forEach(el => el.classList.toggle("active", el === currentInput));
+  // garante teclado visível
+  kbFloat.classList.add("show");
 }
 
 function setTermsChecked(on) {
@@ -312,8 +336,9 @@ function closeTermsOverlay(accept) {
 
 function updateEnabledState() {
   const okName = validName(inputName.value);
+  const okSurname = validName(inputSurname.value);
   const okTerms = isTermsChecked();
-  const ok = okName && okTerms;
+  const ok = okName && okSurname && okTerms;
   ctaWrap.classList.toggle("disabled", !ok);
   if (ok) errEl.textContent = "";
   else if (!okTerms) errEl.textContent = ""; // não mostra erro até tentar salvar
@@ -321,12 +346,15 @@ function updateEnabledState() {
 
 function showOverlay() {
   ensureDom();
-  const cur = getLocalPlayer();
-  inputName.value = cur.nome || "";
+  const cur = getLocalPlayer(); // já retorna nome completo se existir
+  const { first, last } = splitFullName(cur.nome || "");
+  inputName.value = first;
+  inputSurname.value = last;
   setTermsChecked(!!cur.acceptedTerms); // mantém aceitação se já existia
   updateEnabledState();
   overlay.classList.add("show");
   kbFloat.classList.add("show");
+  setActiveInput(inputName);
 }
 
 function hideOverlay() {
@@ -340,20 +368,33 @@ function validName(name) {
   return n.length >= 2 && n.length <= 40;
 }
 function validate() {
-  if (!validName(inputName.value)) return "Digite pelo menos 2 letras.";
+  if (!validName(inputName.value)) return "Digite seu nome (mín. 2 letras).";
+  if (!validName(inputSurname.value)) return "Digite seu sobrenome (mín. 2 letras).";
   if (!isTermsChecked()) return "É necessário aceitar os termos para continuar.";
   return "";
+}
+function joinFullName(first, last) {
+  return String(`${(first || "").trim()} ${(last || "").trim()}`.trim()).replace(/\s+/g, " ");
+}
+function splitFullName(full) {
+  const t = String(full || "").trim().replace(/\s+/g, " ");
+  if (!t) return { first: "", last: "" };
+  const parts = t.split(" ");
+  const first = parts.shift() || "";
+  const last = parts.join(" ");
+  return { first, last };
 }
 
 function trySave() {
   const msg = validate();
   if (msg) { errEl.textContent = msg; return; }
 
-  // Salva nome + aceite de termos
+  // Salva Nome + Sobrenome como "nome" (campo único) + aceite de termos
+  const full = joinFullName(inputName.value, inputSurname.value);
   try {
     localStorage.setItem(
       STORAGE_KEY,
-      JSON.stringify({ nome: inputName.value.trim(), acceptedTerms: true })
+      JSON.stringify({ nome: full, acceptedTerms: true })
     );
   } catch { }
 
@@ -412,21 +453,27 @@ function makeKey(label, type = "char", extraCls = "") {
     b.addEventListener("pointercancel", stop);
     b.addEventListener("pointerleave", stop);
   } else if (type === "clear") {
-    b.addEventListener("pointerdown", () => { inputName.value = ""; updateEnabledState(); });
+    b.addEventListener("pointerdown", () => {
+      (currentInput || inputName).value = "";
+      updateEnabledState();
+    });
   } else if (type === "ok") {
     b.addEventListener("pointerdown", trySave);
   }
   return b;
 }
 function insertText(t) {
-  const max = Number(inputName.getAttribute("maxlength") || 40);
-  if ((inputName.value || "").length >= max) return;
-  inputName.value += t;
+  const target = currentInput || inputName;
+  const max = Number(target.getAttribute("maxlength") || 40);
+  const cur = target.value || "";
+  if (cur.length >= max) return;
+  target.value = cur + t;
   updateEnabledState();
 }
 function backspaceOnce() {
-  const v = inputName.value || "";
-  inputName.value = v.slice(0, Math.max(0, v.length - 1));
+  const target = currentInput || inputName;
+  const v = target.value || "";
+  target.value = v.slice(0, Math.max(0, v.length - 1));
   updateEnabledState();
 }
 function makeDraggable(box, handle) {
@@ -479,7 +526,7 @@ export function getLocalPlayer() {
     const obj = raw ? JSON.parse(raw) : null;
     if (obj && typeof obj === "object") {
       return {
-        nome: String(obj.nome || "").trim(),
+        nome: String(obj.nome || "").trim(),        // nome completo (Nome + Sobrenome)
         acceptedTerms: !!obj.acceptedTerms,
       };
     }
