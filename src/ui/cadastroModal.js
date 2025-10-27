@@ -120,7 +120,7 @@ function ensureStyles() {
 
   /* -------- teclado virtual flutuante -------- */
   #vkFloat{
-    position:fixed; left:50%; top:55%; transform:translate(-50%, -50%);
+    position:fixed; left:50%; top:60%; transform:translate(-50%, -50%);
     width:min(94vw, 700px);
     z-index:1201;
     background:rgba(11,11,15,.82); border:2px solid #222; border-radius:16px;
