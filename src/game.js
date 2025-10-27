@@ -1554,7 +1554,7 @@ function ensureRankOverlay() {
       padding: clamp(18px, 3vh, 28px) clamp(22px, 4vh, 40px);
     }
     #rankOverlay .panel-inner{ display:flex; align-items:center; gap:min(4vw,24px); }
-    #rankOverlay .panel .bird{ width:min(18vw,120px); image-rendering:pixelated; filter:drop-shadow(0 2px 0 #0003) }
+    #rankOverlay .panel .bird{ width: min(30vw, 165px); image-rendering:pixelated; filter:drop-shadow(0 2px 0 #0003) }
     #rankOverlay .score{
       font-weight:900; color:#ffffff; background:#111; padding:2px 12px; border-radius:10px; display:inline-block;
       font-size:clamp(64px,10vh,120px); line-height:1;
