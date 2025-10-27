@@ -1198,6 +1198,87 @@ function ensureStartOverlay() {
   document.getElementById('btnScores')?.addEventListener('click', (e) => { e.preventDefault(); showScoresOverlay(); });
 }
 
+// --- Hotspot secreto: 5 toques no canto superior esquerdo abre /config.html ---
+// versão robusta: elemento fixo no body, acima de tudo
+(function setupSecretCorner() {
+  // remove instâncias antigas pra evitar duplicação em HMR
+  const old = document.getElementById('flappy-secret-corner');
+  if (old) old.remove();
+
+  const secret = document.createElement('button');
+  secret.id = 'flappy-secret-corner';
+  secret.type = 'button';
+  secret.setAttribute('aria-hidden', 'true');
+  secret.style.position = 'fixed';
+  secret.style.left = 'env(safe-area-inset-left, 0px)';
+  secret.style.top = 'env(safe-area-inset-top, 0px)';
+  secret.style.width = 'min(12vw, 80px)';
+  secret.style.height = 'min(12vw, 80px)';
+  secret.style.background = 'transparent';
+  secret.style.border = '0';
+  secret.style.padding = '0';
+  secret.style.margin = '0';
+  secret.style.zIndex = '2147483647';     // máximo
+  secret.style.pointerEvents = 'auto';
+  secret.style.touchAction = 'none';
+  secret.style.userSelect = 'none';
+  // para debugar, descomente a linha abaixo pra ver a área
+  // secret.style.background = 'rgba(255,0,0,.15)';
+
+  document.body.appendChild(secret);
+
+  const TAP_COUNT_REQUIRED = 5;
+  const TAP_WINDOW_MS = 2500;
+  let tapCount = 0;
+  let firstTapTs = 0;
+  let resetTimer = null;
+
+  function resetTaps() {
+    tapCount = 0;
+    firstTapTs = 0;
+    if (resetTimer) { clearTimeout(resetTimer); resetTimer = null; }
+  }
+
+  function goToConfig() {
+    resetTaps();
+    location.assign((typeof joinBase === 'function') ? joinBase('config.html') : 'config.html');
+  }
+
+  secret.addEventListener('pointerdown', (e) => {
+    // só vale na tela inicial visível
+    if (!startOverlay || !startOverlay.classList.contains('show')) return;
+
+    e.preventDefault();
+
+    const now = performance.now();
+    if (tapCount === 0 || (now - firstTapTs) > TAP_WINDOW_MS) {
+      tapCount = 1;
+      firstTapTs = now;
+    } else {
+      tapCount++;
+    }
+
+    if (resetTimer) clearTimeout(resetTimer);
+    resetTimer = setTimeout(resetTaps, TAP_WINDOW_MS);
+
+    if (tapCount >= TAP_COUNT_REQUIRED) {
+      goToConfig();
+    }
+  }, { passive: false });
+
+  // fallback por teclado (opcional): 5 vezes "KeyK" quando o menu está visível
+  let keyTapCount = 0, keyTimer = null;
+  document.addEventListener('keydown', (e) => {
+    if (!startOverlay || !startOverlay.classList.contains('show')) return;
+    if (e.code !== 'KeyK') return;
+    keyTapCount++;
+    if (keyTimer) clearTimeout(keyTimer);
+    keyTimer = setTimeout(() => keyTapCount = 0, 2500);
+    if (keyTapCount >= 5) { keyTapCount = 0; goToConfig(); }
+  });
+})();
+
+
 function showStartOverlay() {
   // esconde o hint e mostra a tela inicial
   hideTapHint();

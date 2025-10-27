@@ -9,7 +9,7 @@ const DEFAULT_SLUG = 'default';
 
 // Usuários mockados
 const MOCK_CREDENTIALS = {
-  master: { email: 'master@local', password: '123456' },
+  master: { email: 'master@local', password: '@Phygital27' },
   client: { email: 'client@local', password: '123456' },
 };
 
