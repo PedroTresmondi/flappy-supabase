@@ -1536,7 +1536,7 @@ function ensureRankOverlay() {
     #rankOverlay.show{display:block}
     #rankOverlay .wrap{position:absolute;inset:0;display:grid;place-items:start center;pointer-events:auto}
     #rankOverlay .prize{
-      margin-top:2px; font-size:clamp(16px,3.2vh,24px); color:#222;
+      margin-top:2px; font-size:clamp(16px,3.2vh,40px); color:#222;
       text-shadow:-2px -2px 0 #fff, 2px -2px 0 #fff, -2px 2px 0 #fff, 2px 2px 0 #fff;
       font-weight:800; letter-spacing:1px;
     }
@@ -1547,21 +1547,35 @@ function ensureRankOverlay() {
       user-select:none;
     }
     #rankOverlay .panel{
-      position:relative; margin-top:3vh; width:min(88vw, 620px);
-      aspect-ratio: 5 / 3; background-image:url('${panelBgUrl}');
-      background-repeat:no-repeat; background-position:center; background-size:contain;
-      image-rendering:pixelated; display:flex; align-items:center; justify-content:center;
-      padding: clamp(18px, 3vh, 28px) clamp(22px, 4vh, 40px);
+    position: relative;
+    margin-top: 3vh;
+    width: min(88vw, 620px);
+    aspect-ratio: 5 / 3;
+    background-image: url(/flappy-supabase/assets/img/modalBG.png);
+    background-repeat: no-repeat;
+    background-position: center;
+    background-size: contain;
+    image-rendering: pixelated;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: clamp(18px, 3vh, 28px) clamp(22px, 4vh, 40px);
+    flex-direction: column;
     }
     #rankOverlay .panel-inner{ display:flex; align-items:center; gap:min(4vw,24px); }
-    #rankOverlay .panel .bird{ width: min(30vw, 165px); image-rendering:pixelated; filter:drop-shadow(0 2px 0 #0003) }
+    #rankOverlay .pannel-inner-elements{
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    }
+    #rankOverlay .panel .bird{ width: min(30vw, 260px); image-rendering:pixelated; filter:drop-shadow(0 2px 0 #0003); transform: rotate(18deg); }
     #rankOverlay .score{
-      font-weight:900; color:#ffffff; background:#111; padding:2px 12px; border-radius:10px; display:inline-block;
-      font-size:clamp(64px,10vh,120px); line-height:1;
+      font-weight:900; color:#ffffff;  padding:2px 12px; border-radius:10px; display:inline-block;
+      font-size:clamp(64px,10vh,165px); line-height:1;
       text-shadow:-6px -6px 0 #000, 6px -6px 0 #000, -6px  6px 0 #000, 6px  6px 0 #000, 0 4px 0 #000;
     }
     #rankOverlay .ranking{
-      margin-top:8px; font-size:clamp(18px,3.5vh,26px); color:#222;
+      margin-top:8px; font-size:clamp(18px,3.5vh,50px); color:#222;
       text-shadow:-2px -2px 0 #fff, 2px -2px 0 #fff, -2px  2px 0 #fff, 2px  2px 0 #fff;
       font-weight:800; letter-spacing:1px;
     }
@@ -1587,12 +1601,13 @@ function ensureRankOverlay() {
       <div class="panel">
         <div class="panel-inner">
           ${UI_ASSETS.heroBird ? `<img class="bird" src="${UI_ASSETS.heroBird}" alt="bird">` : ''}
-          <div>
+          <div class="pannel-inner-elements">
             <div id="rankScore" class="score">0</div>
-            <div id="rankPos" class="ranking">Ranking --</div>
+    
             <div id="rankPrize" class="prize"></div>
           </div>
         </div>
+                <div id="rankPos" class="ranking">Ranking --</div>
       </div>
       <div class="finalizar">Finalizar</div>
       ${UI_ASSETS.hand ? `<img class="hand" src="${UI_ASSETS.hand}" alt="tap">` : ''}
